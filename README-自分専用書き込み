@@ -1,0 +1,24 @@
+//ファイル構成(今考えてる構成)
+
+Calender
+┃
+┣src┳ui┳login
+┃   ┃  ┣ForAdmin
+┃   ┃  ┣ForUser
+┃   ┃  ┣ForGuest
+┃   ┃  ┗component┳html━Calender
+┃   ┃            ┣css //あれば
+┃   ┃            ┗javaScript //あれば
+┃   ┗Script┳Server //API経由？
+┃          ┃
+┃          ┗Data
+┗README //テキストで書いてるけど最近はmdで書くらしいのでそれに変換しても
+
+//仕様
+・言語
+    ・今現在htmlを使っているがReactにするつもり(html,Reactを現在学習中)
+・データについて
+    ・検索に特化
+    ・
+・UIについて
+    ・componentのカレンダー
