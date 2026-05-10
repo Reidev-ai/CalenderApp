@@ -14,6 +14,8 @@ export type Schedule = {
 
 export type SidebarMode = "edit" | "detail" | "overlapList";
 
+export type CalendarViewMode = "month" | "week" | "day";
+
 export type LaidOutSchedule = {
   schedule: Schedule;
   topPercent: number;

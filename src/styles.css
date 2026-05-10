@@ -81,8 +81,20 @@ button {
 }
 
 .icon-button {
+  position: relative;
   width: 38px;
   padding: 0;
+}
+
+.notification-dot {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 7px;
+  height: 7px;
+  border: 2px solid #ffffff;
+  border-radius: 999px;
+  background: #ef4444;
 }
 
 .primary-button {
@@ -136,7 +148,7 @@ button {
 .week-header {
   height: 58px;
   display: grid;
-  grid-template-columns: 72px repeat(7, minmax(96px, 1fr));
+  grid-template-columns: 72px repeat(var(--day-count, 7), minmax(96px, 1fr));
   background: #ffffff;
   border: 1px solid #d9dde4;
   border-radius: 8px 8px 0 0;
@@ -151,12 +163,30 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
   border-right: 1px solid #e3e7ee;
 }
 
 .week-day-cell:last-child {
   border-right: 0;
+}
+
+.week-day-cell.today {
+  background: #fff5f5;
+}
+
+.week-day-label {
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-radius: 999px;
+}
+
+.week-day-cell.today .week-day-label {
+  background: #ef4444;
+  color: #ffffff;
 }
 
 .date-label {
@@ -167,20 +197,173 @@ button {
   color: #697386;
 }
 
+.week-day-cell.today .weekday-label {
+  color: #ffffff;
+}
+
 .week-scroll-area {
   height: calc(100vh - 64px - 58px - 36px);
   display: grid;
   grid-template-columns: 72px 1fr;
-  overflow-y: auto;
+  overflow: hidden;
   background: #ffffff;
   border: 1px solid #d9dde4;
   border-top: 0;
   border-radius: 0 0 8px 8px;
 }
 
+.month-title-row {
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.month-title-row h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.month-title-row span {
+  color: #697386;
+  font-size: 13px;
+}
+
+.month-weekday-header {
+  height: 42px;
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #d9dde4;
+  border-radius: 8px 8px 0 0;
+}
+
+.month-weekday-cell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #4b5563;
+  font-weight: 700;
+  border-right: 1px solid #e3e7ee;
+}
+
+.month-weekday-cell:last-child {
+  border-right: 0;
+}
+
+.month-grid {
+  height: calc(100vh - 64px - 48px - 42px - 36px);
+  display: grid;
+  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  grid-template-rows: repeat(6, minmax(0, 1fr));
+  overflow: hidden;
+  background: #ffffff;
+  border: 1px solid #d9dde4;
+  border-top: 0;
+  border-radius: 0 0 8px 8px;
+}
+
+.month-day-cell {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border-right: 1px solid #edf0f5;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.month-day-cell:nth-child(7n) {
+  border-right: 0;
+}
+
+.month-day-cell:nth-last-child(-n + 7) {
+  border-bottom: 0;
+}
+
+.month-day-cell.outside-month {
+  background: #fafbfc;
+  color: #9aa3b2;
+}
+
+.month-day-cell.today {
+  background: #fff5f5;
+}
+
+.month-day-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+}
+
+.month-date-pill {
+  min-width: 30px;
+  height: 26px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-weight: 700;
+}
+
+.month-day-cell.today .month-date-pill {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.month-task-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow: hidden;
+}
+
+.month-task-chip {
+  min-height: 26px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 6px;
+  padding: 4px 7px;
+  border: 1px solid #d8dde6;
+  border-left: 4px solid #2563eb;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #303846;
+  text-align: left;
+}
+
+.month-task-chip strong,
+.month-task-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.month-task-chip strong {
+  color: #2563eb;
+}
+
+.month-hidden-count {
+  height: 24px;
+  border: 1px solid #c7d2fe;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 12px;
+  font-weight: 700;
+}
+
 .time-axis {
   position: relative;
-  min-height: 1440px;
+  height: 100%;
+  min-height: 0;
   border-right: 1px solid #d9dde4;
   background: #fbfcfe;
 }
@@ -191,6 +374,14 @@ button {
   transform: translateY(-50%);
   font-size: 12px;
   color: #657186;
+}
+
+.time-mark.start {
+  transform: translateY(0);
+}
+
+.time-mark.end {
+  transform: translateY(-100%);
 }
 
 .current-time-chip {
@@ -208,9 +399,20 @@ button {
 
 .week-grid {
   position: relative;
-  min-height: 1440px;
+  height: 100%;
+  min-height: 0;
   display: grid;
-  grid-template-columns: repeat(7, minmax(96px, 1fr));
+  grid-template-columns: repeat(var(--day-count, 7), minmax(96px, 1fr));
+}
+
+.day-header,
+.day-view-area,
+.day-grid {
+  --day-count: 1;
+}
+
+.day-view-column .task-cell {
+  max-width: 520px;
 }
 
 .time-guide,

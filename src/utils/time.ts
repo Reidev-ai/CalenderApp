@@ -40,3 +40,18 @@ export function getWeekDays(anchorDate: Date): Date[] {
     return date;
   });
 }
+
+export function getMonthGridDays(anchorDate: Date): Date[] {
+  const firstDay = new Date(anchorDate.getFullYear(), anchorDate.getMonth(), 1);
+  firstDay.setDate(firstDay.getDate() - firstDay.getDay());
+
+  return Array.from({ length: 42 }, (_, index) => {
+    const date = new Date(firstDay);
+    date.setDate(firstDay.getDate() + index);
+    return date;
+  });
+}
+
+export function formatMonthTitle(date: Date): string {
+  return `${date.getFullYear()}年${date.getMonth() + 1}月`;
+}

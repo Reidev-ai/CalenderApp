@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
-import { CalendarDays, ChevronLeft, ChevronRight, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal } from "lucide-react";
+import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
-import type { LaidOutSchedule, Schedule, SidebarMode } from "./types";
-import { formatDateLabel, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
+import type { CalendarViewMode, LaidOutSchedule, Schedule, SidebarMode } from "./types";
+import { formatDateLabel, formatMonthTitle, getMonthGridDays, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
 import { layoutSchedulesForDay } from "./utils/layoutSchedules";
 
 const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
@@ -14,8 +14,11 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [settingOpen, setSettingOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
+  const [viewMode, setViewMode] = useState<CalendarViewMode>("week");
   const [overlapList, setOverlapList] = useState<Schedule[]>([]);
-  const weekDates = useMemo(() => getWeekDays(new Date("2026-05-11T09:00:00")), []);
+  const anchorDate = useMemo(() => new Date("2026-05-11T09:00:00"), []);
+  const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
+  const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
 
   function openSchedule(schedule: Schedule) {
     setSelectedSchedule(schedule);
@@ -33,16 +36,35 @@ export default function App() {
     <div className="app-shell">
       <TopBar
         sidebarOpen={sidebarOpen}
+        viewMode={viewMode}
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onOpenSetting={() => setSettingOpen(true)}
+        onViewModeChange={setViewMode}
       />
       <main className="workspace">
-        <CalendarWeekDesktop
-          weekDates={weekDates}
-          schedules={mockSchedules}
-          onSelectSchedule={openSchedule}
-          onOpenOverlapList={openOverlapList}
-        />
+        {viewMode === "month" ? (
+          <CalendarMonthDesktop
+            anchorDate={anchorDate}
+            monthDates={monthDates}
+            schedules={mockSchedules}
+            onSelectSchedule={openSchedule}
+            onOpenHiddenList={openOverlapList}
+          />
+        ) : viewMode === "day" ? (
+          <CalendarDayDesktop
+            date={anchorDate}
+            schedules={mockSchedules}
+            onSelectSchedule={openSchedule}
+            onOpenOverlapList={openOverlapList}
+          />
+        ) : (
+          <CalendarWeekDesktop
+            weekDates={weekDates}
+            schedules={mockSchedules}
+            onSelectSchedule={openSchedule}
+            onOpenOverlapList={openOverlapList}
+          />
+        )}
         <SideBar
           open={sidebarOpen}
           mode={sidebarMode}
@@ -59,11 +81,13 @@ export default function App() {
 
 type TopBarProps = {
   sidebarOpen: boolean;
+  viewMode: CalendarViewMode;
   onToggleSidebar: () => void;
   onOpenSetting: () => void;
+  onViewModeChange: (mode: CalendarViewMode) => void;
 };
 
-function TopBar({ sidebarOpen, onToggleSidebar, onOpenSetting }: TopBarProps) {
+function TopBar({ sidebarOpen, viewMode, onToggleSidebar, onOpenSetting, onViewModeChange }: TopBarProps) {
   return (
     <header className="topbar">
       <div className="topbar-group">
@@ -77,6 +101,10 @@ function TopBar({ sidebarOpen, onToggleSidebar, onOpenSetting }: TopBarProps) {
         <button className="icon-button" aria-label="設定" onClick={onOpenSetting}>
           <Settings size={18} />
         </button>
+        <button className="icon-button notification-button" aria-label="通知">
+          <Bell size={18} />
+          <span className="notification-dot" />
+        </button>
         <button className="primary-button">
           <Plus size={16} />
           新規作成
@@ -87,9 +115,9 @@ function TopBar({ sidebarOpen, onToggleSidebar, onOpenSetting }: TopBarProps) {
           <PanelRightOpen size={18} />
         </button>
         <div className="segmented-control" aria-label="表示切替">
-          <button>月</button>
-          <button className="active">週</button>
-          <button>日</button>
+          <button className={viewMode === "month" ? "active" : ""} onClick={() => onViewModeChange("month")}>月</button>
+          <button className={viewMode === "week" ? "active" : ""} onClick={() => onViewModeChange("week")}>週</button>
+          <button className={viewMode === "day" ? "active" : ""} onClick={() => onViewModeChange("day")}>日</button>
         </div>
         <button className="secondary-button">
           <CalendarDays size={16} />
@@ -103,6 +131,71 @@ function TopBar({ sidebarOpen, onToggleSidebar, onOpenSetting }: TopBarProps) {
         </button>
       </div>
     </header>
+  );
+}
+
+type CalendarMonthDesktopProps = {
+  anchorDate: Date;
+  monthDates: Date[];
+  schedules: Schedule[];
+  onSelectSchedule: (schedule: Schedule) => void;
+  onOpenHiddenList: (schedules: Schedule[]) => void;
+};
+
+function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSchedule, onOpenHiddenList }: CalendarMonthDesktopProps) {
+  const todayKey = toDateKey(new Date());
+  const anchorMonth = anchorDate.getMonth();
+
+  return (
+    <section className="calendar-panel" aria-label="月表示カレンダー">
+      <div className="month-title-row">
+        <h1>{formatMonthTitle(anchorDate)}</h1>
+        <span>月表示</span>
+      </div>
+      <div className="month-weekday-header">
+        {weekDays.map((day) => (
+          <div className="month-weekday-cell" key={day}>{day}</div>
+        ))}
+      </div>
+      <div className="month-grid">
+        {monthDates.map((date) => {
+          const dateKey = toDateKey(date);
+          const daySchedules = schedules
+            .filter((schedule) => schedule.date === dateKey)
+            .sort((a, b) => a.startTime.localeCompare(b.startTime));
+          const visibleSchedules = daySchedules.slice(0, 3);
+          const hiddenSchedules = daySchedules.slice(3);
+          const isToday = dateKey === todayKey;
+          const isOutsideMonth = date.getMonth() !== anchorMonth;
+
+          return (
+            <div className={`month-day-cell ${isToday ? "today" : ""} ${isOutsideMonth ? "outside-month" : ""}`} key={dateKey}>
+              <div className="month-day-head">
+                <span className="month-date-pill">{date.getDate()}</span>
+              </div>
+              <div className="month-task-list">
+                {visibleSchedules.map((schedule) => (
+                  <button
+                    className="month-task-chip"
+                    style={{ borderLeftColor: schedule.tagColor }}
+                    key={schedule.id}
+                    onClick={() => onSelectSchedule(schedule)}
+                  >
+                    <strong>{schedule.startTime}</strong>
+                    <span>{schedule.siteName}</span>
+                  </button>
+                ))}
+                {hiddenSchedules.length > 0 && (
+                  <button className="month-hidden-count" onClick={() => onOpenHiddenList(hiddenSchedules)}>
+                    +{hiddenSchedules.length}件
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 
@@ -159,16 +252,73 @@ function CalendarWeekDesktop({ weekDates, schedules, onSelectSchedule, onOpenOve
   );
 }
 
-function WeekHeader({ weekDates }: { weekDates: Date[] }) {
+type CalendarDayDesktopProps = {
+  date: Date;
+  schedules: Schedule[];
+  onSelectSchedule: (schedule: Schedule) => void;
+  onOpenOverlapList: (schedules: Schedule[]) => void;
+};
+
+function CalendarDayDesktop({ date, schedules, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+  const currentMinute = 9 * 60 + 45;
+  const currentTop = (currentMinute / 1440) * 100;
+  const dateKey = toDateKey(date);
+  const daySchedules = schedules.filter((schedule) => schedule.date === dateKey);
+  const laidOut = layoutSchedulesForDay(daySchedules, maxVisibleColumns);
+  const hiddenByGroup = groupHiddenSchedules(laidOut);
+
   return (
-    <div className="week-header">
-      <div className="time-axis-spacer" />
-      {weekDates.map((date) => (
-        <div className="week-day-cell" key={toDateKey(date)}>
-          <span className="date-label">{formatDateLabel(date)}</span>
-          <span className="weekday-label">{weekDays[date.getDay()]}</span>
+    <section className="calendar-panel" aria-label="日表示カレンダー">
+      <WeekHeader weekDates={[date]} className="day-header" />
+      <div className="week-scroll-area day-view-area">
+        <TimeAxis currentMinute={currentMinute} />
+        <div className="week-grid day-grid">
+          {timeMarks.map((minute) => (
+            <div className="time-guide" style={{ top: `${(minute / 1440) * 100}%` }} key={minute} />
+          ))}
+          <div className="current-time-line" style={{ top: `${currentTop}%` }} />
+          <div className="day-column day-view-column">
+            {laidOut
+              .filter((item) => !item.hidden)
+              .map((item) => (
+                <TaskCell key={item.schedule.id} item={item} onClick={() => onSelectSchedule(item.schedule)} />
+              ))}
+            {hiddenByGroup.map((group) => (
+              <button
+                className="hidden-count"
+                style={{ top: `${group.topPercent}%` }}
+                key={group.groupId}
+                onClick={() => onOpenOverlapList(group.schedules)}
+              >
+                +{group.schedules.length}件
+              </button>
+            ))}
+          </div>
         </div>
-      ))}
+      </div>
+    </section>
+  );
+}
+
+function WeekHeader({ weekDates, className = "" }: { weekDates: Date[]; className?: string }) {
+  const todayKey = toDateKey(new Date());
+
+  return (
+    <div className={`week-header ${className}`}>
+      <div className="time-axis-spacer" />
+      {weekDates.map((date) => {
+        const dateKey = toDateKey(date);
+        const isToday = dateKey === todayKey;
+
+        return (
+          <div className={`week-day-cell ${isToday ? "today" : ""}`} key={dateKey}>
+            <span className="week-day-label">
+              <span className="date-label">{formatDateLabel(date)}</span>
+              <span className="weekday-label">{weekDays[date.getDay()]}</span>
+            </span>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -177,7 +327,7 @@ function TimeAxis({ currentMinute }: { currentMinute: number }) {
   return (
     <div className="time-axis">
       {timeMarks.map((minute) => (
-        <span className="time-mark" style={{ top: `${(minute / 1440) * 100}%` }} key={minute}>
+        <span className={`time-mark ${minute === 0 ? "start" : ""} ${minute === 1440 ? "end" : ""}`} style={{ top: `${(minute / 1440) * 100}%` }} key={minute}>
           {minutesToTime(minute)}
         </span>
       ))}
@@ -284,6 +434,10 @@ function ScheduleEditor({ schedule }: { schedule: Schedule }) {
       </label>
       <div className="sidebar-actions">
         <button type="button" className="secondary-button">キャンセル</button>
+        <button type="button" className="secondary-button">
+          <Copy size={16} />
+          複製
+        </button>
         <button type="button" className="danger-button">削除</button>
         <button type="button" className="primary-button">保存</button>
       </div>
