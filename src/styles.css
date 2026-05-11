@@ -514,6 +514,27 @@ button {
   color: #4b5563;
 }
 
+.task-cell.narrow {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 5px;
+  writing-mode: vertical-lr;
+  text-orientation: upright;
+}
+
+.task-cell.narrow strong,
+.task-cell.narrow span {
+  max-width: none;
+  max-height: 100%;
+  line-height: 1.15;
+  white-space: normal;
+}
+
+.task-cell.narrow strong {
+  font-size: 11px;
+}
+
 .hidden-count {
   position: absolute;
   right: 6px;
@@ -701,6 +722,14 @@ button {
 button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
+}
+
+.auto-size-textarea {
+  min-height: 78px;
+  max-height: 260px;
+  resize: none;
+  overflow-y: auto;
+  line-height: 1.5;
 }
 
 .field-row {
@@ -928,4 +957,40 @@ button:disabled {
 .tag-color-input {
   width: 42px;
   padding: 4px !important;
+}
+
+.context-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  border: 0;
+  background: transparent;
+}
+
+.tag-context-menu {
+  position: fixed;
+  z-index: 31;
+  min-width: 150px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 12px 32px rgb(15 23 42 / 0.18);
+}
+
+.tag-context-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.tag-context-title strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
 }

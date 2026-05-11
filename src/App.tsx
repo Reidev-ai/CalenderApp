@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
 import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { CalendarViewMode, LaidOutSchedule, Schedule, SidebarMode, Tag, UserRole } from "./types";
@@ -8,6 +8,7 @@ import { layoutSchedulesForDay } from "./utils/layoutSchedules";
 const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
 const timeMarks = [0, 360, 720, 1080, 1440];
 const fallbackMaxVisibleColumns = 3;
+const minTaskCellWidth = 28;
 const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
@@ -48,6 +49,7 @@ export default function App() {
   const [memberFilter, setMemberFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState("all");
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
+  const [tagContextMenu, setTagContextMenu] = useState<{ tag: Tag; x: number; y: number } | null>(null);
   const now = useCurrentTime();
   const currentMinute = now.getHours() * 60 + now.getMinutes();
   const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
@@ -192,6 +194,18 @@ export default function App() {
     setTags((current) => current.map((tag) => (tag.id === tagId ? { ...tag, ...patch } : tag)));
   }
 
+  function openTagContextMenu(tag: Tag, x: number, y: number) {
+    setTagContextMenu({ tag, x, y });
+  }
+
+  function deleteTag(tag: Tag) {
+    setTags((current) => current.filter((item) => item.id !== tag.id));
+    setSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
+    setTrashSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
+    setTagFilter((current) => (current === tag.color ? "all" : current));
+    setTagContextMenu(null);
+  }
+
   function moveAnchor(step: number) {
     setAnchorDate((current) => {
       const next = new Date(current);
@@ -256,7 +270,7 @@ export default function App() {
           <CalendarDayDesktop
             date={anchorDate}
             schedules={visibleSchedules}
-            maxVisibleColumns={maxVisibleColumns}
+            fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
@@ -265,7 +279,7 @@ export default function App() {
           <CalendarWeekDesktop
             weekDates={weekDates}
             schedules={visibleSchedules}
-            maxVisibleColumns={maxVisibleColumns}
+            fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
@@ -287,6 +301,7 @@ export default function App() {
           onMarkAsRead={markSelectedAsRead}
           onRestoreSchedule={restoreSchedule}
           onAddTag={addTag}
+          onOpenTagContextMenu={openTagContextMenu}
           onStartResize={startSidebarResize}
         />
       </main>
@@ -298,8 +313,18 @@ export default function App() {
         onAddTag={addTag}
         onUpdateTag={updateTag}
         onOpenTrash={openTrash}
+        onOpenTagContextMenu={openTagContextMenu}
         onClose={() => setSettingOpen(false)}
       />
+      {tagContextMenu && (
+        <TagContextMenu
+          tag={tagContextMenu.tag}
+          x={tagContextMenu.x}
+          y={tagContextMenu.y}
+          onDelete={deleteTag}
+          onClose={() => setTagContextMenu(null)}
+        />
+      )}
     </div>
   );
 }
@@ -488,13 +513,17 @@ function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSched
 type CalendarWeekDesktopProps = {
   weekDates: Date[];
   schedules: Schedule[];
-  maxVisibleColumns: number;
+  fallbackMaxVisibleColumns: number;
   currentMinute: number;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-function CalendarWeekDesktop({ weekDates, schedules, maxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
+function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const gridWidth = useElementWidth(gridRef);
+  const dayColumnWidth = gridWidth > 0 ? gridWidth / weekDates.length : 0;
+  const visibleColumnCount = getVisibleStackCount(dayColumnWidth, fallbackMaxVisibleColumns);
   const currentTop = (currentMinute / 1440) * 100;
   const weekStart = weekDates[0];
   const weekEnd = weekDates[weekDates.length - 1];
@@ -507,7 +536,7 @@ function CalendarWeekDesktop({ weekDates, schedules, maxVisibleColumns, currentM
       <WeekHeader weekDates={weekDates} />
       <div className="week-scroll-area">
         <TimeAxis currentMinute={currentMinute} />
-        <div className="week-grid">
+        <div className="week-grid" ref={gridRef}>
           {timeMarks.map((minute) => (
             <div className="time-guide" style={{ top: `${(minute / 1440) * 100}%` }} key={minute} />
           ))}
@@ -515,7 +544,7 @@ function CalendarWeekDesktop({ weekDates, schedules, maxVisibleColumns, currentM
           {weekDates.map((date) => {
             const dateKey = toDateKey(date);
             const daySchedules = schedules.filter((schedule) => schedule.date === dateKey);
-            const laidOut = layoutSchedulesForDay(daySchedules, maxVisibleColumns);
+            const laidOut = layoutSchedulesForDay(daySchedules, visibleColumnCount);
             const hiddenByGroup = groupHiddenSchedules(laidOut);
 
             return (
@@ -547,17 +576,20 @@ function CalendarWeekDesktop({ weekDates, schedules, maxVisibleColumns, currentM
 type CalendarDayDesktopProps = {
   date: Date;
   schedules: Schedule[];
-  maxVisibleColumns: number;
+  fallbackMaxVisibleColumns: number;
   currentMinute: number;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-function CalendarDayDesktop({ date, schedules, maxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const gridWidth = useElementWidth(gridRef);
+  const visibleColumnCount = getVisibleStackCount(gridWidth, fallbackMaxVisibleColumns);
   const currentTop = (currentMinute / 1440) * 100;
   const dateKey = toDateKey(date);
   const daySchedules = schedules.filter((schedule) => schedule.date === dateKey);
-  const laidOut = layoutSchedulesForDay(daySchedules, maxVisibleColumns);
+  const laidOut = layoutSchedulesForDay(daySchedules, visibleColumnCount);
   const hiddenByGroup = groupHiddenSchedules(laidOut);
 
   return (
@@ -566,7 +598,7 @@ function CalendarDayDesktop({ date, schedules, maxVisibleColumns, currentMinute,
       <WeekHeader weekDates={[date]} className="day-header" />
       <div className="week-scroll-area day-view-area">
         <TimeAxis currentMinute={currentMinute} />
-        <div className="week-grid day-grid">
+        <div className="week-grid day-grid" ref={gridRef}>
           {timeMarks.map((minute) => (
             <div className="time-guide" style={{ top: `${(minute / 1440) * 100}%` }} key={minute} />
           ))}
@@ -641,14 +673,33 @@ function TimeAxis({ currentMinute }: { currentMinute: number }) {
 }
 
 function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => void }) {
+  const cellRef = useRef<HTMLButtonElement | null>(null);
+  const [cellWidth, setCellWidth] = useState(0);
   const width = `calc(${100 / item.columnCount}% - 6px)`;
   const left = `calc(${(100 / item.columnCount) * item.columnIndex}% + 3px)`;
-  const showMore = item.heightPercent > 8;
-  const showFull = item.heightPercent > 14;
+  const isNarrow = cellWidth > 0 && cellWidth < 74;
+  const showSiteName = item.heightPercent > 3.8;
+  const showMembers = !isNarrow && item.heightPercent > 8;
+  const showContractor = !isNarrow && item.heightPercent > 14;
+  const showAddress = !isNarrow && item.heightPercent > 18;
+
+  useEffect(() => {
+    const node = cellRef.current;
+    if (!node) return;
+
+    const updateWidth = () => setCellWidth(node.getBoundingClientRect().width);
+    updateWidth();
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, []);
 
   return (
     <button
-      className="task-cell"
+      ref={cellRef}
+      className={`task-cell ${isNarrow ? "narrow" : ""}`}
       style={{
         top: `${item.topPercent}%`,
         height: `${item.heightPercent}%`,
@@ -661,10 +712,10 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
       <strong>
         {item.schedule.startTime} ~ {item.schedule.endTime}
       </strong>
-      <span>{item.schedule.siteName}</span>
-      {showMore && <span>{item.schedule.members.join("、")}</span>}
-      {showFull && <span>{item.schedule.contractor}</span>}
-      {showFull && <span>{item.schedule.address}</span>}
+      {showSiteName && <span>{item.schedule.siteName}</span>}
+      {showMembers && <span>{item.schedule.members.join("、")}</span>}
+      {showContractor && <span>{item.schedule.contractor}</span>}
+      {showAddress && <span>{item.schedule.address}</span>}
     </button>
   );
 }
@@ -699,6 +750,7 @@ type SideBarProps = {
   onMarkAsRead: () => void;
   onRestoreSchedule: (schedule: Schedule) => void;
   onAddTag: () => void;
+  onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void;
 };
 
@@ -718,6 +770,7 @@ function SideBar({
   onMarkAsRead,
   onRestoreSchedule,
   onAddTag,
+  onOpenTagContextMenu,
   onStartResize,
 }: SideBarProps) {
   return (
@@ -746,6 +799,7 @@ function SideBar({
             role={role}
             tags={tags}
             onAddTag={onAddTag}
+            onOpenTagContextMenu={onOpenTagContextMenu}
             onSave={onSaveSchedule}
             onDelete={onDeleteSchedule}
             onDuplicate={onDuplicateSchedule}
@@ -766,6 +820,7 @@ function ScheduleEditor({
   role,
   tags,
   onAddTag,
+  onOpenTagContextMenu,
   onSave,
   onDelete,
   onDuplicate,
@@ -775,6 +830,7 @@ function ScheduleEditor({
   role: UserRole;
   tags: Tag[];
   onAddTag: () => void;
+  onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onSave: (schedule: Schedule) => void;
   onDelete: (scheduleId: string) => void;
   onDuplicate: (schedule: Schedule) => void;
@@ -833,7 +889,14 @@ function ScheduleEditor({
             const selected = getScheduleTagColors(draft).includes(tag.color);
 
             return (
-              <label className={`tag-choice ${selected ? "selected" : ""}`} key={tag.id}>
+              <label
+                className={`tag-choice ${selected ? "selected" : ""}`}
+                key={tag.id}
+                onContextMenu={(event) => {
+                  event.preventDefault();
+                  onOpenTagContextMenu(tag, event.clientX, event.clientY);
+                }}
+              >
                 <input
                   type="checkbox"
                   checked={selected}
@@ -849,7 +912,13 @@ function ScheduleEditor({
       </div>
       <label className="field">
         <span>メモ</span>
-        <textarea value={draft.memo} disabled={!canEdit} rows={5} onChange={(event) => updateDraft("memo", event.target.value)} />
+        <textarea
+          className="auto-size-textarea"
+          value={draft.memo}
+          disabled={!canEdit}
+          rows={getTextareaRows(draft.memo)}
+          onChange={(event) => updateDraft("memo", event.target.value)}
+        />
       </label>
       <ReadStatus schedule={draft} />
       <div className="sidebar-actions">
@@ -972,6 +1041,36 @@ function NotificationPanel({ unreadSchedules, onSelectSchedule }: { unreadSchedu
   );
 }
 
+function TagContextMenu({
+  tag,
+  x,
+  y,
+  onDelete,
+  onClose,
+}: {
+  tag: Tag;
+  x: number;
+  y: number;
+  onDelete: (tag: Tag) => void;
+  onClose: () => void;
+}) {
+  return (
+    <>
+      <button className="context-menu-backdrop" aria-label="タグメニューを閉じる" onClick={onClose} />
+      <div className="tag-context-menu" style={{ left: x, top: y }}>
+        <div className="tag-context-title">
+          <span className="tag-preview-dot" style={{ background: tag.color }} />
+          <strong>{tag.name}</strong>
+        </div>
+        <button className="danger-button" onClick={() => onDelete(tag)}>
+          <Trash2 size={15} />
+          削除
+        </button>
+      </div>
+    </>
+  );
+}
+
 function SettingDrawer({
   open,
   maxVisibleColumns,
@@ -980,6 +1079,7 @@ function SettingDrawer({
   onAddTag,
   onUpdateTag,
   onOpenTrash,
+  onOpenTagContextMenu,
   onClose,
 }: {
   open: boolean;
@@ -989,6 +1089,7 @@ function SettingDrawer({
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onOpenTrash: () => void;
+  onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onClose: () => void;
 }) {
   return (
@@ -1022,7 +1123,14 @@ function SettingDrawer({
             </button>
           </div>
           {tags.map((tag) => (
-            <div className="tag-editor-row" key={tag.id}>
+            <div
+              className="tag-editor-row"
+              key={tag.id}
+              onContextMenu={(event) => {
+                event.preventDefault();
+                onOpenTagContextMenu(tag, event.clientX, event.clientY);
+              }}
+            >
               <input
                 className="tag-color-input"
                 type="color"
@@ -1087,6 +1195,15 @@ function splitMembers(value: string) {
     .filter(Boolean);
 }
 
+function getTextareaRows(value: string) {
+  return Math.min(12, Math.max(3, value.split("\n").length));
+}
+
+function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
+  if (dayColumnWidth <= 0) return fallback;
+  return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
+}
+
 function createScheduleId() {
   return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }
@@ -1097,6 +1214,15 @@ function getScheduleTagColors(schedule: Schedule) {
 
 function getPrimaryTagColor(schedule: Schedule) {
   return getScheduleTagColors(schedule)[0] ?? "#3b82f6";
+}
+
+function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {
+  const nextColors = getScheduleTagColors(schedule).filter((tagColor) => tagColor !== color);
+  return {
+    ...schedule,
+    tagColors: nextColors,
+    tagColor: nextColors[0] ?? "#3b82f6",
+  };
 }
 
 function useCurrentTime() {
@@ -1111,4 +1237,23 @@ function useCurrentTime() {
   }, []);
 
   return now;
+}
+
+function useElementWidth(ref: RefObject<HTMLElement | null>) {
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+
+    const updateWidth = () => setWidth(node.getBoundingClientRect().width);
+    updateWidth();
+
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return width;
 }
