@@ -10,11 +10,22 @@ export type Schedule = {
   address: string;
   memo: string;
   tagColor: string;
+  tagColors?: string[];
+  readBy: string[];
+  isPersonal?: boolean;
 };
 
-export type SidebarMode = "edit" | "detail" | "overlapList";
+export type Tag = {
+  id: string;
+  name: string;
+  color: string;
+};
+
+export type SidebarMode = "edit" | "detail" | "overlapList" | "trash";
 
 export type CalendarViewMode = "month" | "week" | "day";
+
+export type UserRole = "Admin" | "User" | "Guest";
 
 export type LaidOutSchedule = {
   schedule: Schedule;

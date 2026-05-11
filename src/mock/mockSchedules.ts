@@ -13,6 +13,8 @@ export const mockSchedules: Schedule[] = [
     address: "東京都千代田区丸の内1-1",
     memo: "朝礼後に搬入口へ集合",
     tagColor: "#3b82f6",
+    tagColors: ["#3b82f6", "#f97316"],
+    readBy: ["佐藤"],
   },
   {
     id: "task-2",
@@ -26,6 +28,8 @@ export const mockSchedules: Schedule[] = [
     address: "東京都港区芝5-2",
     memo: "管理人室で鍵受け取り",
     tagColor: "#22c55e",
+    tagColors: ["#22c55e"],
+    readBy: [],
   },
   {
     id: "task-3",
@@ -39,6 +43,8 @@ export const mockSchedules: Schedule[] = [
     address: "東京都大田区東海3-4",
     memo: "ヘルメット必須",
     tagColor: "#f97316",
+    tagColors: ["#f97316"],
+    readBy: ["高橋", "伊藤"],
   },
   {
     id: "task-4",
@@ -52,6 +58,8 @@ export const mockSchedules: Schedule[] = [
     address: "東京都文京区本郷2-8",
     memo: "警備室へ連絡してから入館",
     tagColor: "#a855f7",
+    tagColors: ["#a855f7"],
+    readBy: [],
   },
   {
     id: "task-5",
@@ -65,6 +73,8 @@ export const mockSchedules: Schedule[] = [
     address: "東京都新宿区西新宿1-5",
     memo: "写真多めに残す",
     tagColor: "#ef4444",
+    tagColors: ["#ef4444"],
+    readBy: ["鈴木"],
   },
   {
     id: "task-6",
@@ -78,5 +88,7 @@ export const mockSchedules: Schedule[] = [
     address: "埼玉県川口市栄町1-7",
     memo: "大型車の旋回場所を確認",
     tagColor: "#14b8a6",
+    tagColors: ["#14b8a6"],
+    readBy: [],
   },
 ];
