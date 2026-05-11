@@ -678,10 +678,13 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
   const width = `calc(${100 / item.columnCount}% - 6px)`;
   const left = `calc(${(100 / item.columnCount) * item.columnIndex}% + 3px)`;
   const isNarrow = cellWidth > 0 && cellWidth < 74;
-  const showSiteName = item.heightPercent > 3.8;
-  const showMembers = !isNarrow && item.heightPercent > 8;
-  const showContractor = !isNarrow && item.heightPercent > 14;
-  const showAddress = !isNarrow && item.heightPercent > 18;
+  const widthCapacity = getTaskCellWidthCapacity(cellWidth);
+  const heightCapacity = getTaskCellHeightCapacity(item.heightPercent);
+  const visibleDetailCount = Math.min(widthCapacity, heightCapacity);
+  const showSiteName = visibleDetailCount >= 2;
+  const showMembers = visibleDetailCount >= 3;
+  const showContractor = visibleDetailCount >= 4;
+  const showAddress = visibleDetailCount >= 5;
 
   useEffect(() => {
     const node = cellRef.current;
@@ -1202,6 +1205,23 @@ function getTextareaRows(value: string) {
 function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
   if (dayColumnWidth <= 0) return fallback;
   return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
+}
+
+function getTaskCellWidthCapacity(width: number) {
+  if (width <= 0) return 1;
+  if (width < 34) return 1;
+  if (width < 52) return 2;
+  if (width < 74) return 3;
+  if (width < 118) return 4;
+  return 5;
+}
+
+function getTaskCellHeightCapacity(heightPercent: number) {
+  if (heightPercent < 3.8) return 1;
+  if (heightPercent < 8) return 2;
+  if (heightPercent < 14) return 3;
+  if (heightPercent < 18) return 4;
+  return 5;
 }
 
 function createScheduleId() {

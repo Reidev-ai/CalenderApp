@@ -517,8 +517,10 @@ button {
 .task-cell.narrow {
   flex-direction: column;
   align-items: flex-start;
-  gap: 6px;
-  padding: 6px 5px;
+  gap: 2px;
+  padding: 3px 1px;
+  border-left-width: 2px;
+  border-radius: 4px;
   writing-mode: vertical-lr;
   text-orientation: upright;
 }
@@ -527,12 +529,16 @@ button {
 .task-cell.narrow span {
   max-width: none;
   max-height: 100%;
-  line-height: 1.15;
+  line-height: 1;
   white-space: normal;
 }
 
 .task-cell.narrow strong {
-  font-size: 11px;
+  font-size: 10px;
+}
+
+.task-cell.narrow span {
+  font-size: 10px;
 }
 
 .hidden-count {
