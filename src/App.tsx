@@ -41,13 +41,13 @@ export default function App() {
   const [settingOpen, setSettingOpen] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
-  const [viewMode, setViewMode] = useState<CalendarViewMode>("week");
+  const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [overlapList, setOverlapList] = useState<Schedule[]>([]);
   const [anchorDate, setAnchorDate] = useState(() => new Date("2026-05-11T09:00:00"));
   const [role, setRole] = useState<UserRole>("Admin");
   const [searchQuery, setSearchQuery] = useState("");
-  const [memberFilter, setMemberFilter] = useState("all");
-  const [tagFilter, setTagFilter] = useState("all");
+  const [memberFilters, setMemberFilters] = useState<string[]>([]);
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
   const [tagContextMenu, setTagContextMenu] = useState<{ tag: Tag; x: number; y: number } | null>(null);
   const now = useCurrentTime();
@@ -58,8 +58,8 @@ export default function App() {
   const allMembers = useMemo(() => [...new Set(schedules.flatMap((schedule) => schedule.members))].sort(), [schedules]);
   const allTags = useMemo(() => tags, [tags]);
   const visibleSchedules = useMemo(
-    () => filterSchedulesByUi(schedules, role, searchQuery, memberFilter, tagFilter),
-    [schedules, role, searchQuery, memberFilter, tagFilter],
+    () => filterSchedulesByUi(schedules, role, searchQuery, memberFilters, tagFilters),
+    [schedules, role, searchQuery, memberFilters, tagFilters],
   );
   const unreadSchedules = useMemo(
     () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(currentMember)),
@@ -202,7 +202,7 @@ export default function App() {
     setTags((current) => current.filter((item) => item.id !== tag.id));
     setSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
     setTrashSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
-    setTagFilter((current) => (current === tag.color ? "all" : current));
+    setTagFilters((current) => current.filter((color) => color !== tag.color));
     setTagContextMenu(null);
   }
 
@@ -227,8 +227,8 @@ export default function App() {
         viewMode={viewMode}
         role={role}
         searchQuery={searchQuery}
-        memberFilter={memberFilter}
-        tagFilter={tagFilter}
+        memberFilters={memberFilters}
+        tagFilters={tagFilters}
         members={allMembers}
         tags={allTags}
         unreadCount={unreadSchedules.length}
@@ -238,8 +238,8 @@ export default function App() {
         onViewModeChange={setViewMode}
         onRoleChange={setRole}
         onSearchQueryChange={setSearchQuery}
-        onMemberFilterChange={setMemberFilter}
-        onTagFilterChange={setTagFilter}
+        onMemberFiltersChange={setMemberFilters}
+        onTagFiltersChange={setTagFilters}
         onCreateNew={createNewSchedule}
         onToday={goToday}
         onPrevious={() => moveAnchor(-1)}
@@ -334,8 +334,8 @@ type TopBarProps = {
   viewMode: CalendarViewMode;
   role: UserRole;
   searchQuery: string;
-  memberFilter: string;
-  tagFilter: string;
+  memberFilters: string[];
+  tagFilters: string[];
   members: string[];
   tags: Tag[];
   unreadCount: number;
@@ -345,8 +345,8 @@ type TopBarProps = {
   onViewModeChange: (mode: CalendarViewMode) => void;
   onRoleChange: (role: UserRole) => void;
   onSearchQueryChange: (query: string) => void;
-  onMemberFilterChange: (member: string) => void;
-  onTagFilterChange: (tag: string) => void;
+  onMemberFiltersChange: (members: string[]) => void;
+  onTagFiltersChange: (tags: string[]) => void;
   onCreateNew: () => void;
   onToday: () => void;
   onPrevious: () => void;
@@ -358,8 +358,8 @@ function TopBar({
   viewMode,
   role,
   searchQuery,
-  memberFilter,
-  tagFilter,
+  memberFilters,
+  tagFilters,
   members,
   tags,
   unreadCount,
@@ -369,14 +369,15 @@ function TopBar({
   onViewModeChange,
   onRoleChange,
   onSearchQueryChange,
-  onMemberFilterChange,
-  onTagFilterChange,
+  onMemberFiltersChange,
+  onTagFiltersChange,
   onCreateNew,
   onToday,
   onPrevious,
   onNext,
 }: TopBarProps) {
-  const selectedTag = tags.find((tag) => tag.color === tagFilter);
+  const [filterOpen, setFilterOpen] = useState(false);
+  const hasFilter = memberFilters.length > 0 || tagFilters.length > 0;
 
   return (
     <header className="topbar">
@@ -385,24 +386,47 @@ function TopBar({
           <Search size={16} />
           <input value={searchQuery} placeholder="検索" onChange={(event) => onSearchQueryChange(event.target.value)} />
         </label>
-        <label className="compact-select filter-select">
-          <SlidersHorizontal size={15} />
-          <select value={memberFilter} onChange={(event) => onMemberFilterChange(event.target.value)}>
-            <option value="all">全メンバー</option>
-            {members.map((member) => (
-              <option value={member} key={member}>{member}</option>
-            ))}
-          </select>
-        </label>
-        <label className="compact-select tag-select">
-          <span className="tag-preview-dot" style={{ background: selectedTag?.color ?? "#94a3b8" }} />
-          <select value={tagFilter} onChange={(event) => onTagFilterChange(event.target.value)}>
-            <option value="all">全タグ</option>
-            {tags.map((tag) => (
-              <option value={tag.color} key={tag.id}>{tag.name}</option>
-            ))}
-          </select>
-        </label>
+        <div className="filter-menu-root">
+          <button className={`secondary-button filter-button ${hasFilter ? "active-filter" : ""}`} onClick={() => setFilterOpen((value) => !value)}>
+            <SlidersHorizontal size={16} />
+            <span className="button-label">フィルター</span>
+          </button>
+          {filterOpen && (
+            <div className="filter-popover">
+              <div className="filter-field">
+                <span>メンバー</span>
+                <div className="filter-check-list">
+                  {members.map((member) => (
+                    <label className="filter-check-item" key={member}>
+                      <input
+                        type="checkbox"
+                        checked={memberFilters.includes(member)}
+                        onChange={() => onMemberFiltersChange(toggleListValue(memberFilters, member))}
+                      />
+                      <span>{member}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="filter-field">
+                <span>タグ</span>
+                <div className="filter-check-list">
+                  {tags.map((tag) => (
+                    <label className="filter-check-item" key={tag.id}>
+                      <input
+                        type="checkbox"
+                        checked={tagFilters.includes(tag.color)}
+                        onChange={() => onTagFiltersChange(toggleListValue(tagFilters, tag.color))}
+                      />
+                      <span className="tag-preview-dot" style={{ background: tag.color }} />
+                      <span>{tag.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
         <button className="icon-button" aria-label="設定" onClick={onOpenSetting}>
           <Settings size={18} />
         </button>
@@ -412,7 +436,7 @@ function TopBar({
         </button>
         <button className="primary-button" disabled={role !== "Admin"} onClick={onCreateNew}>
           <Plus size={16} />
-          新規作成
+          <span className="button-label">新規作成</span>
         </button>
       </div>
       <div className="topbar-group">
@@ -685,6 +709,7 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
   const showMembers = visibleDetailCount >= 3;
   const showContractor = visibleDetailCount >= 4;
   const showAddress = visibleDetailCount >= 5;
+  const timeSeparator = isNarrow ? " | " : " ~ ";
 
   useEffect(() => {
     const node = cellRef.current;
@@ -713,7 +738,7 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
       onClick={onClick}
     >
       <strong>
-        {item.schedule.startTime} ~ {item.schedule.endTime}
+        {item.schedule.startTime}{timeSeparator}{item.schedule.endTime}
       </strong>
       {showSiteName && <span>{item.schedule.siteName}</span>}
       {showMembers && <span>{item.schedule.members.join("、")}</span>}
@@ -1162,16 +1187,16 @@ function filterSchedulesByUi(
   schedules: Schedule[],
   role: UserRole,
   searchQuery: string,
-  memberFilter: string,
-  tagFilter: string,
+  memberFilters: string[],
+  tagFilters: string[],
 ) {
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   return schedules.filter((schedule) => {
     if (role === "User" && !schedule.members.includes(currentMember) && !schedule.isPersonal) return false;
     if (role === "Guest" && !schedule.members.includes(currentMember)) return false;
-    if (memberFilter !== "all" && !schedule.members.includes(memberFilter)) return false;
-    if (tagFilter !== "all" && !getScheduleTagColors(schedule).includes(tagFilter)) return false;
+    if (memberFilters.length > 0 && !memberFilters.some((member) => schedule.members.includes(member))) return false;
+    if (tagFilters.length > 0 && !tagFilters.some((tagColor) => getScheduleTagColors(schedule).includes(tagColor))) return false;
     if (!normalizedQuery) return true;
 
     return [
@@ -1189,6 +1214,12 @@ function filterSchedulesByUi(
       .toLowerCase()
       .includes(normalizedQuery);
   });
+}
+
+function toggleListValue(values: string[], value: string) {
+  return values.includes(value)
+    ? values.filter((item) => item !== value)
+    : [...values, value];
 }
 
 function splitMembers(value: string) {

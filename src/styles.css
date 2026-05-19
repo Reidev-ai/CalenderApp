@@ -23,7 +23,7 @@ button {
 }
 
 .app-shell {
-  min-width: 1180px;
+  min-width: 0;
   min-height: 100vh;
   background: #eef0f3;
 }
@@ -93,6 +93,89 @@ button {
   height: 10px;
   border: 1px solid rgb(15 23 42 / 0.16);
   border-radius: 999px;
+}
+
+.member-preview-dot {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #3730a3;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.filter-menu-root {
+  position: relative;
+}
+
+.filter-button.active-filter {
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.filter-popover {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  z-index: 12;
+  width: 240px;
+  padding: 12px;
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 14px 34px rgb(15 23 42 / 0.16);
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.filter-field:last-child {
+  margin-bottom: 0;
+}
+
+.filter-field span {
+  color: #555b66;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.filter-check-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.filter-check-item {
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.filter-check-item input {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+}
+
+.filter-check-item span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .role-select select {
@@ -178,7 +261,7 @@ button {
 
 .calendar-panel {
   min-width: 0;
-  padding: 18px;
+  padding: 0 18px 18px;
 }
 
 .week-header {
@@ -527,10 +610,12 @@ button {
 
 .task-cell.narrow strong,
 .task-cell.narrow span {
-  max-width: none;
+  max-width: 1.2em;
   max-height: 100%;
   line-height: 1;
-  white-space: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .task-cell.narrow strong {
@@ -999,4 +1084,46 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+
+@media (max-width: 720px) {
+  .topbar {
+    gap: 8px;
+    padding: 0 8px;
+    overflow-x: auto;
+  }
+
+  .topbar-group {
+    gap: 6px;
+  }
+
+  .search-box {
+    width: 38px;
+    justify-content: center;
+    padding: 0;
+  }
+
+  .search-box input {
+    width: 0;
+    min-width: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .primary-button .button-label {
+    display: none;
+  }
+
+  .primary-button {
+    width: 38px;
+    padding: 0;
+  }
+
+  .compact-select select {
+    max-width: 76px;
+  }
+
+  .role-select select {
+    max-width: 70px;
+  }
 }
