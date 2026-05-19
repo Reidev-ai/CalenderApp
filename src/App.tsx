@@ -9,6 +9,13 @@ const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
 const timeMarks = [0, 360, 720, 1080, 1440];
 const fallbackMaxVisibleColumns = 3;
 const minTaskCellWidth = 28;
+const monthGridRowCount = 6;
+const monthDayVerticalPadding = 16;
+const monthDayHeadHeight = 26;
+const monthDayGap = 6;
+const monthTaskChipHeight = 26;
+const monthTaskGap = 5;
+const monthHiddenCountHeight = 24;
 const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
@@ -479,6 +486,9 @@ type CalendarMonthDesktopProps = {
 };
 
 function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSchedule, onOpenHiddenList }: CalendarMonthDesktopProps) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const gridHeight = useElementHeight(gridRef);
+  const dayCellHeight = gridHeight > 0 ? gridHeight / monthGridRowCount : 0;
   const todayKey = toDateKey(new Date());
   const anchorMonth = anchorDate.getMonth();
 
@@ -492,14 +502,15 @@ function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSched
           <div className="month-weekday-cell" key={day}>{day}</div>
         ))}
       </div>
-      <div className="month-grid">
+      <div className="month-grid" ref={gridRef}>
         {monthDates.map((date) => {
           const dateKey = toDateKey(date);
           const daySchedules = schedules
             .filter((schedule) => schedule.date === dateKey)
             .sort((a, b) => a.startTime.localeCompare(b.startTime));
-          const visibleSchedules = daySchedules.slice(0, 3);
-          const hiddenSchedules = daySchedules.slice(3);
+          const visibleCount = getVisibleMonthTaskCount(daySchedules.length, dayCellHeight);
+          const visibleSchedules = daySchedules.slice(0, visibleCount);
+          const hiddenSchedules = daySchedules.slice(visibleCount);
           const isToday = dateKey === todayKey;
           const isOutsideMonth = date.getMonth() !== anchorMonth;
 
@@ -1238,6 +1249,18 @@ function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
   return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
 }
 
+function getVisibleMonthTaskCount(scheduleCount: number, dayCellHeight: number) {
+  if (scheduleCount <= 0) return 0;
+  if (dayCellHeight <= 0) return Math.min(scheduleCount, 3);
+
+  const availableHeight = dayCellHeight - monthDayVerticalPadding - monthDayHeadHeight - monthDayGap;
+  const limitWithoutHiddenCount = Math.max(0, Math.floor((availableHeight + monthTaskGap) / (monthTaskChipHeight + monthTaskGap)));
+  if (scheduleCount <= limitWithoutHiddenCount) return scheduleCount;
+
+  const heightReservedForHiddenCount = monthHiddenCountHeight + monthTaskGap;
+  return Math.max(0, Math.floor((availableHeight - heightReservedForHiddenCount + monthTaskGap) / (monthTaskChipHeight + monthTaskGap)));
+}
+
 function getTaskCellWidthCapacity(width: number) {
   if (width <= 0) return 1;
   if (width < 34) return 1;
@@ -1307,4 +1330,23 @@ function useElementWidth(ref: RefObject<HTMLElement | null>) {
   }, [ref]);
 
   return width;
+}
+
+function useElementHeight(ref: RefObject<HTMLElement | null>) {
+  const [height, setHeight] = useState(0);
+
+  useEffect(() => {
+    const node = ref.current;
+    if (!node) return;
+
+    const updateHeight = () => setHeight(node.getBoundingClientRect().height);
+    updateHeight();
+
+    const observer = new ResizeObserver(updateHeight);
+    observer.observe(node);
+
+    return () => observer.disconnect();
+  }, [ref]);
+
+  return height;
 }
