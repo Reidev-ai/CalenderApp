@@ -15,7 +15,7 @@ export function layoutSchedulesForDay(
     .map((schedule) => ({
       schedule,
       start: timeToMinutes(schedule.startTime),
-      end: timeToMinutes(schedule.endTime),
+      end: Math.max(timeToMinutes(schedule.endTime), timeToMinutes(schedule.startTime) + 1),
     }))
     .sort((a, b) => a.start - b.start || a.end - b.end);
 

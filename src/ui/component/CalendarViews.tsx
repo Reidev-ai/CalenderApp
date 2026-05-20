@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import type { LaidOutSchedule, Schedule, TaskCellPriorityItem, UserRole } from "../../types";
 import { formatDateLabel, formatMonthTitle, minutesToTime, toDateKey } from "../../utils/time";
 import { layoutSchedulesForDay } from "../../utils/layoutSchedules";
@@ -36,6 +36,7 @@ type CalendarMonthDesktopProps = {
   role: UserRole;
   taskCellPriority: TaskCellPriorityItem[];
   selectedDateKey: string | null;
+  titleAction?: ReactNode;
   onSelectDate: (dateKey: string) => void;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenHiddenList: (schedules: Schedule[]) => void;
@@ -48,6 +49,7 @@ export function CalendarMonthDesktop({
   role,
   taskCellPriority,
   selectedDateKey,
+  titleAction,
   onSelectDate,
   onSelectSchedule,
   onOpenHiddenList,
@@ -64,6 +66,7 @@ export function CalendarMonthDesktop({
     <section className="calendar-panel" aria-label="月表示カレンダー">
       <div className="month-title-row">
         <h1>{formatMonthTitle(anchorDate)}</h1>
+        {titleAction}
       </div>
       <div className="month-weekday-header">
         {weekDays.map((day) => (
@@ -74,7 +77,7 @@ export function CalendarMonthDesktop({
         {monthDates.map((date) => {
           const dateKey = toDateKey(date);
           const daySchedules = schedules
-            .filter((schedule) => schedule.date === dateKey)
+            .flatMap((schedule) => getScheduleSegmentForDate(schedule, dateKey))
             .sort((a, b) => a.startTime.localeCompare(b.startTime));
           const visibleCount = getVisibleMonthTaskCount(daySchedules.length, dayCellHeight, monthMetrics);
           const visibleSchedules = daySchedules.slice(0, visibleCount);
@@ -142,11 +145,12 @@ type CalendarWeekDesktopProps = {
   currentMinute: number;
   role: UserRole;
   taskCellPriority: TaskCellPriorityItem[];
+  titleAction?: ReactNode;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
+export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const dayColumnWidth = gridWidth > 0 ? gridWidth / weekDates.length : 0;
@@ -159,6 +163,7 @@ export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleCo
     <section className="calendar-panel" aria-label="週表示カレンダー">
       <CalendarTitle
         title={`${weekStart.getFullYear()}年 ${formatDateLabel(weekStart)} - ${formatDateLabel(weekEnd)}`}
+        action={titleAction}
       />
       <WeekHeader weekDates={weekDates} />
       <div className="week-scroll-area">
@@ -170,7 +175,7 @@ export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleCo
           <div className="current-time-line" style={{ top: `${currentTop}%` }} />
           {weekDates.map((date) => {
             const dateKey = toDateKey(date);
-            const daySchedules = schedules.filter((schedule) => schedule.date === dateKey);
+            const daySchedules = schedules.flatMap((schedule) => getScheduleSegmentForDate(schedule, dateKey));
             const laidOut = layoutSchedulesForDay(daySchedules, visibleColumnCount);
             const hiddenByGroup = groupHiddenSchedules(laidOut);
 
@@ -207,23 +212,24 @@ type CalendarDayDesktopProps = {
   currentMinute: number;
   role: UserRole;
   taskCellPriority: TaskCellPriorityItem[];
+  titleAction?: ReactNode;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const visibleColumnCount = getVisibleStackCount(gridWidth, fallbackMaxVisibleColumns);
   const currentTop = (currentMinute / 1440) * 100;
   const dateKey = toDateKey(date);
-  const daySchedules = schedules.filter((schedule) => schedule.date === dateKey);
+  const daySchedules = schedules.flatMap((schedule) => getScheduleSegmentForDate(schedule, dateKey));
   const laidOut = layoutSchedulesForDay(daySchedules, visibleColumnCount);
   const hiddenByGroup = groupHiddenSchedules(laidOut);
 
   return (
     <section className="calendar-panel" aria-label="日表示カレンダー">
-      <CalendarTitle title={`${date.getFullYear()}年 ${formatDateLabel(date)}`} />
+      <CalendarTitle title={`${date.getFullYear()}年 ${formatDateLabel(date)}`} action={titleAction} />
       <WeekHeader weekDates={[date]} className="day-header" />
       <div className="week-scroll-area day-view-area">
         <TimeAxis currentMinute={currentMinute} />
@@ -255,10 +261,11 @@ export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns,
   );
 }
 
-function CalendarTitle({ title }: { title: string }) {
+function CalendarTitle({ title, action }: { title: string; action?: ReactNode }) {
   return (
     <div className="calendar-title-row">
       <h1>{title}</h1>
+      {action}
     </div>
   );
 }
@@ -367,6 +374,25 @@ function renderTaskCellPriorityItem(item: TaskCellPriorityItem, schedule: Schedu
   };
 
   return <span key={item.id}>{valueById[item.id]}</span>;
+}
+
+function getScheduleSegmentForDate(schedule: Schedule, dateKey: string) {
+  const endDate = getScheduleEndDate(schedule);
+  if (dateKey < schedule.date || dateKey > endDate) return [];
+
+  const segment: Schedule = {
+    ...schedule,
+    date: dateKey,
+    startTime: dateKey === schedule.date ? schedule.startTime : "00:00",
+    endTime: dateKey === endDate ? schedule.endTime : "24:00",
+  };
+
+  return [segment];
+}
+
+function getScheduleEndDate(schedule: Schedule) {
+  const endDate = schedule.endDate ?? schedule.date;
+  return endDate < schedule.date ? schedule.date : endDate;
 }
 
 function groupHiddenSchedules(items: LaidOutSchedule[]) {

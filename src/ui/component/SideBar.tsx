@@ -10,7 +10,6 @@ type SideBarProps = {
   mode: SidebarMode;
   selectedSchedule: Schedule | null;
   overlapList: Schedule[];
-  trashSchedules: Schedule[];
   tags: Tag[];
   groupMembers: string[];
   groupMembersError: string;
@@ -20,10 +19,10 @@ type SideBarProps = {
   onDeleteSchedule: (scheduleId: string) => void;
   onDuplicateSchedule: (schedule: Schedule) => void;
   onMarkAsRead: () => void;
-  onRestoreSchedule: (schedule: Schedule) => void;
   onAddTag: () => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+  onDirtyChange: (isDirty: boolean) => void;
 };
 
 export function SideBar({
@@ -32,7 +31,6 @@ export function SideBar({
   mode,
   selectedSchedule,
   overlapList,
-  trashSchedules,
   tags,
   groupMembers,
   groupMembersError,
@@ -42,10 +40,10 @@ export function SideBar({
   onDeleteSchedule,
   onDuplicateSchedule,
   onMarkAsRead,
-  onRestoreSchedule,
   onAddTag,
   onOpenTagContextMenu,
   onStartResize,
+  onDirtyChange,
 }: SideBarProps) {
   return (
     <aside className={`sidebar ${open ? "open" : ""}`}>
@@ -55,12 +53,9 @@ export function SideBar({
           {role === "Admin" && <button className={mode === "edit" ? "active" : ""} onClick={() => onModeChange("edit")}>編集</button>}
           <button className={mode === "detail" ? "active" : ""} onClick={() => onModeChange("detail")}>詳細</button>
           <button className={mode === "overlapList" ? "active" : ""} onClick={() => onModeChange("overlapList")}>一覧</button>
-          <button className={mode === "trash" ? "active" : ""} onClick={() => onModeChange("trash")}>ゴミ箱</button>
         </div>
       </div>
-      {mode === "trash" ? (
-        <TrashList schedules={trashSchedules} onRestoreSchedule={onRestoreSchedule} />
-      ) : mode === "overlapList" ? (
+      {mode === "overlapList" ? (
         <OverlapTaskList schedules={overlapList} onSelectSchedule={onSelectSchedule} />
       ) : role === "Admin" ? (
         <AdminSidebarContent
@@ -75,6 +70,7 @@ export function SideBar({
           onMarkAsRead={onMarkAsRead}
           onAddTag={onAddTag}
           onOpenTagContextMenu={onOpenTagContextMenu}
+          onDirtyChange={onDirtyChange}
         />
       ) : role === "User" ? (
         <UserSidebarContent selectedSchedule={selectedSchedule} onMarkAsRead={onMarkAsRead} />
@@ -96,28 +92,6 @@ function OverlapTaskList({ schedules, onSelectSchedule }: { schedules: Schedule[
           <small>{schedule.members.join("、")}</small>
         </button>
       ))}
-    </div>
-  );
-}
-
-function TrashList({ schedules, onRestoreSchedule }: { schedules: Schedule[]; onRestoreSchedule: (schedule: Schedule) => void }) {
-  return (
-    <div className="overlap-list">
-      <p className="list-note">削除したタスク</p>
-      {schedules.length === 0 ? (
-        <div className="empty-state">ゴミ箱は空です</div>
-      ) : (
-        schedules.map((schedule) => (
-          <div className="trash-item" key={schedule.id}>
-            <div>
-              <span>{schedule.date} {schedule.startTime} ~ {schedule.endTime}</span>
-              <strong>{schedule.siteName}</strong>
-              <small>{schedule.members.join("、") || "メンバー未指定"}</small>
-            </div>
-            <button className="secondary-button" onClick={() => onRestoreSchedule(schedule)}>復元</button>
-          </div>
-        ))
-      )}
     </div>
   );
 }

@@ -56,4 +56,9 @@ export type LoginBody = {
   password?: string;
 };
 
+export type MemberPatch = {
+  name?: string;
+  role?: UserRole;
+};
+
 export type SchedulePatch = Partial<Schedule>;

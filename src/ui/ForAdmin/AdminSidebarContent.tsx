@@ -15,6 +15,7 @@ export function AdminSidebarContent({
   onMarkAsRead,
   onAddTag,
   onOpenTagContextMenu,
+  onDirtyChange,
 }: {
   mode: SidebarMode;
   selectedSchedule: Schedule | null;
@@ -27,10 +28,11 @@ export function AdminSidebarContent({
   onMarkAsRead: () => void;
   onAddTag: () => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
+  onDirtyChange: (isDirty: boolean) => void;
 }) {
-  if (!selectedSchedule) return <div className="empty-state">タスクを選択してください</div>;
-
   if (mode === "edit") {
+    if (!selectedSchedule) return <EmptyEditorState onDirtyChange={onDirtyChange} />;
+
     return (
       <ScheduleEditor
         schedule={selectedSchedule}
@@ -40,6 +42,7 @@ export function AdminSidebarContent({
         groupMembersError={groupMembersError}
         onAddTag={onAddTag}
         onOpenTagContextMenu={onOpenTagContextMenu}
+        onDirtyChange={onDirtyChange}
         onSave={onSaveSchedule}
         onDelete={onDeleteSchedule}
         onDuplicate={onDuplicateSchedule}
@@ -48,7 +51,17 @@ export function AdminSidebarContent({
     );
   }
 
+  if (!selectedSchedule) return <div className="empty-state">タスクを選択してください</div>;
+
   return <ScheduleDetail schedule={selectedSchedule} role="Admin" onMarkAsRead={onMarkAsRead} />;
+}
+
+function EmptyEditorState({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
+  useEffect(() => {
+    onDirtyChange(false);
+  }, [onDirtyChange]);
+
+  return <div className="empty-state">タスクを選択してください</div>;
 }
 
 function ScheduleEditor({
@@ -59,6 +72,7 @@ function ScheduleEditor({
   groupMembersError,
   onAddTag,
   onOpenTagContextMenu,
+  onDirtyChange,
   onSave,
   onDelete,
   onDuplicate,
@@ -71,6 +85,7 @@ function ScheduleEditor({
   groupMembersError: string;
   onAddTag: () => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
+  onDirtyChange: (isDirty: boolean) => void;
   onSave: (schedule: Schedule) => void;
   onDelete: (scheduleId: string) => void;
   onDuplicate: (schedule: Schedule) => void;
@@ -85,6 +100,11 @@ function ScheduleEditor({
   useEffect(() => {
     setDraft(schedule);
   }, [schedule]);
+
+  useEffect(() => {
+    onDirtyChange(isDirty);
+    return () => onDirtyChange(false);
+  }, [isDirty, onDirtyChange]);
 
   function updateDraft(field: keyof Schedule, value: string | string[] | boolean) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -131,7 +151,10 @@ function ScheduleEditor({
     <form className="editor-body" onSubmit={(event) => event.preventDefault()}>
       <Field label="現場名" value={draft.siteName} disabled={!canEdit} onChange={(value) => updateDraft("siteName", value)} />
       <Field label="内容" value={draft.content} disabled={!canEdit} onChange={(value) => updateDraft("content", value)} />
-      <Field label="日付" value={draft.date} disabled={!canEdit} onChange={(value) => updateDraft("date", value)} />
+      <div className="field-row">
+        <Field label="開始日" value={draft.date} disabled={!canEdit} onChange={(value) => updateDraft("date", value)} />
+        <Field label="終了日" value={draft.endDate ?? draft.date} disabled={!canEdit} onChange={(value) => updateDraft("endDate", value)} />
+      </div>
       <div className="field-row">
         <Field label="開始予定時間" value={draft.startTime} disabled={!canEdit} onChange={(value) => updateDraft("startTime", value)} />
         <Field label="終了予定時間" value={draft.endTime} disabled={!canEdit} onChange={(value) => updateDraft("endTime", value)} />

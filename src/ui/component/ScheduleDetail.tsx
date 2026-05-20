@@ -12,6 +12,7 @@ export function ScheduleDetail({
   return (
     <div className="detail-body">
       <h3>{schedule.siteName}</h3>
+      <p>{formatScheduleDateRange(schedule)}</p>
       <p>{schedule.startTime} ~ {schedule.endTime}</p>
       <dl>
         <dt>内容</dt>
@@ -31,6 +32,11 @@ export function ScheduleDetail({
       )}
     </div>
   );
+}
+
+function formatScheduleDateRange(schedule: Schedule) {
+  const endDate = schedule.endDate ?? schedule.date;
+  return schedule.date === endDate ? schedule.date : `${schedule.date} ~ ${endDate}`;
 }
 
 export function ReadStatus({ schedule }: { schedule: Schedule }) {

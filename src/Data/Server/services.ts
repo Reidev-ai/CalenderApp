@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Schedule, Tag, UserRole } from "../../types.ts";
-import type { Database, LoginBody, PublicUser, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
+import type { Database, LoginBody, MemberPatch, PublicUser, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
 import { HttpError } from "./http.ts";
 
 export function publicUser(user: ServerUser): PublicUser {
@@ -126,6 +126,49 @@ export function listGroupMembers(data: Database, groupId: string) {
   return { group, users };
 }
 
+export function updateGroupMember(data: Database, groupId: string, userId: string, patch: MemberPatch) {
+  const group = data.groups.find((item) => item.id === groupId);
+  if (!group) throw new HttpError(404, "グループが見つかりません");
+
+  const user = data.users.find((item) => item.id === userId && item.groupId === groupId);
+  if (!user) throw new HttpError(404, "メンバーが見つかりません");
+
+  if (patch.name !== undefined) {
+    const name = patch.name.trim();
+    if (!name) throw new HttpError(400, "name is required");
+    user.name = name;
+  }
+
+  if (patch.role !== undefined) {
+    if (patch.role === "Guest") throw new HttpError(400, "Guestには変更できません");
+    user.role = patch.role;
+    group.adminIds = patch.role === "Admin"
+      ? [...new Set([...group.adminIds, user.id])]
+      : group.adminIds.filter((id) => id !== user.id);
+  }
+
+  return { user: publicUser(user), group };
+}
+
+export function removeGroupMember(data: Database, groupId: string, userId: string) {
+  const group = data.groups.find((item) => item.id === groupId);
+  if (!group) throw new HttpError(404, "グループが見つかりません");
+
+  const user = data.users.find((item) => item.id === userId && item.groupId === groupId);
+  if (!user) throw new HttpError(404, "メンバーが見つかりません");
+  if (group.adminIds.includes(user.id) && group.adminIds.length <= 1) {
+    throw new HttpError(409, "最後のAdminは削除できません");
+  }
+
+  group.memberIds = group.memberIds.filter((id) => id !== user.id);
+  group.adminIds = group.adminIds.filter((id) => id !== user.id);
+  data.users = data.users.filter((item) => item.id !== user.id);
+  data.sessions = data.sessions.filter((session) => session.userId !== user.id);
+  data.joinRequests = data.joinRequests.filter((request) => request.userId !== user.id);
+
+  return { user: publicUser(user), group };
+}
+
 export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
   const role = query.get("role") as UserRole | null;
   const member = query.get("member") ?? "";
@@ -139,10 +182,11 @@ export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
     if (!text) return true;
 
     return [
-      schedule.siteName,
-      schedule.content,
-      schedule.date,
-      schedule.startTime,
+    schedule.siteName,
+    schedule.content,
+    schedule.date,
+    schedule.endDate,
+    schedule.startTime,
       schedule.endTime,
       schedule.members.join(" "),
       schedule.contractor,
@@ -239,6 +283,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     siteName: input.siteName ?? "新規現場",
     content: input.content ?? "",
     date: input.date ?? new Date().toISOString().slice(0, 10),
+    endDate: input.endDate ?? input.date ?? new Date().toISOString().slice(0, 10),
     startTime: input.startTime ?? "09:00",
     endTime: input.endTime ?? "10:00",
     members: input.members ?? [],

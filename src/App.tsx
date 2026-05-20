@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointer
 import { toPng } from "html-to-image";
 import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
-import type { AuthSession, CalendarViewMode, JoinRequest, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
+import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
 import { LoginView } from "./ui/Share/login/LoginView";
 import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop } from "./ui/component/CalendarViews";
 import { SideBar } from "./ui/component/SideBar";
@@ -63,8 +63,11 @@ export default function App() {
   const role = authSession?.user.role ?? "Guest";
   const [searchQuery, setSearchQuery] = useState("");
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
+  const [groupUsers, setGroupUsers] = useState<AuthUser[]>([]);
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupMembersError, setGroupMembersError] = useState("");
+  const [apiMessage, setApiMessage] = useState("");
+  const [dirtyEditor, setDirtyEditor] = useState(false);
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
   const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(defaultTaskCellPriority);
@@ -85,6 +88,7 @@ export default function App() {
     () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(currentMember)),
     [visibleSchedules],
   );
+  const searchActive = searchQuery.trim() !== "" || memberFilters.length > 0 || tagFilters.length > 0;
 
   useEffect(() => {
     if (authSession) {
@@ -98,7 +102,26 @@ export default function App() {
     if (!authSession) return;
 
     void refreshGroupMembers(authSession.user.groupId);
+    void refreshServerData();
   }, [authSession?.user.groupId]);
+
+  async function refreshServerData() {
+    setApiMessage("");
+
+    try {
+      const [schedulePayload, trashPayload, tagPayload] = await Promise.all([
+        getApiJson<{ schedules: Schedule[] }>("/api/schedules"),
+        getApiJson<{ schedules: Schedule[] }>("/api/trash"),
+        getApiJson<{ tags: Tag[] }>("/api/tags"),
+      ]);
+      setSchedules(schedulePayload.schedules);
+      setTrashSchedules(trashPayload.schedules);
+      setTags(tagPayload.tags);
+      setSelectedScheduleId((current) => current ?? schedulePayload.schedules[0]?.id ?? null);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "APIからデータを取得できませんでした");
+    }
+  }
 
   async function refreshGroupMembers(groupId: string) {
     setGroupMembersError("");
@@ -107,6 +130,7 @@ export default function App() {
 
     try {
       const payload = await getApiJson<{ users: AuthSession["user"][] }>(`/api/groups/${encodeURIComponent(groupId)}/members`);
+      setGroupUsers(payload.users);
       setGroupMembers(mergeMemberNames(fallbackMembers, payload.users.map((user) => user.name)));
     } catch (error) {
       try {
@@ -116,11 +140,36 @@ export default function App() {
           .map((request) => request.user?.name)
           .filter((name): name is string => Boolean(name));
         setGroupMembers(mergeMemberNames(fallbackMembers, approvedMembers));
+        setGroupUsers([]);
         setGroupMembersError("");
       } catch {
         setGroupMembers((current) => mergeMemberNames(fallbackMembers, current));
         setGroupMembersError(error instanceof Error ? error.message : "グループメンバーを取得できませんでした");
       }
+    }
+  }
+
+  async function updateGroupMember(userId: string, patch: Partial<Pick<AuthUser, "name" | "role">>) {
+    if (!authSession) return;
+
+    try {
+      await patchApiJson<{ user: AuthUser }>(`/api/groups/${encodeURIComponent(authSession.user.groupId)}/members/${encodeURIComponent(userId)}`, patch);
+      await refreshGroupMembers(authSession.user.groupId);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "メンバーを更新できませんでした");
+    }
+  }
+
+  async function removeGroupMember(userId: string) {
+    if (!authSession || !confirm("このメンバーをグループから削除しますか？")) return;
+
+    try {
+      await deleteApiJson<{ user: AuthUser }>(`/api/groups/${encodeURIComponent(authSession.user.groupId)}/members/${encodeURIComponent(userId)}`);
+      await refreshGroupMembers(authSession.user.groupId);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "メンバーを削除できませんでした");
     }
   }
 
@@ -142,52 +191,87 @@ export default function App() {
     }
   }, [role, sidebarMode]);
 
+  function confirmDiscardIfDirty() {
+    return !dirtyEditor || confirm("保存していない変更があります。破棄しますか？");
+  }
+
   function openSchedule(schedule: Schedule) {
+    if (!confirmDiscardIfDirty()) return;
     setSelectedScheduleId(schedule.id);
     setSidebarMode(role === "Admin" ? "edit" : "detail");
     setSidebarOpen(true);
   }
 
   function openOverlapList(schedules: Schedule[]) {
+    if (!confirmDiscardIfDirty()) return;
     setOverlapList(schedules);
     setSidebarMode("overlapList");
     setSidebarOpen(true);
   }
 
-  function saveSchedule(schedule: Schedule) {
-    setSchedules((current) => {
-      const exists = current.some((item) => item.id === schedule.id);
-      return exists ? current.map((item) => (item.id === schedule.id ? schedule : item)) : [...current, schedule];
-    });
-    setSelectedScheduleId(schedule.id);
-    setSidebarMode("edit");
+  async function saveSchedule(schedule: Schedule) {
+    const normalizedSchedule = normalizeScheduleDateRange(schedule);
+    const exists = schedules.some((item) => item.id === normalizedSchedule.id);
+
+    try {
+      const payload = exists
+        ? await putApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(normalizedSchedule.id)}`, normalizedSchedule)
+        : await postApiJson<{ schedule: Schedule }>("/api/schedules", normalizedSchedule);
+      setSchedules((current) => {
+        const hasSchedule = current.some((item) => item.id === payload.schedule.id);
+        return hasSchedule ? current.map((item) => (item.id === payload.schedule.id ? payload.schedule : item)) : [...current, payload.schedule];
+      });
+      setSelectedScheduleId(payload.schedule.id);
+      setSidebarMode("edit");
+      setDirtyEditor(false);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "スケジュールを保存できませんでした");
+    }
   }
 
-  function deleteSchedule(scheduleId: string) {
+  async function deleteSchedule(scheduleId: string) {
     const target = schedules.find((schedule) => schedule.id === scheduleId);
     if (!target || !confirm("このタスクをゴミ箱に移動しますか？")) return;
-    setSchedules((current) => current.filter((schedule) => schedule.id !== scheduleId));
-    setTrashSchedules((current) => [target, ...current]);
-    setSelectedScheduleId(null);
+
+    try {
+      const payload = await deleteApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(scheduleId)}`);
+      setSchedules((current) => current.filter((schedule) => schedule.id !== scheduleId));
+      setTrashSchedules((current) => [payload.schedule, ...current]);
+      setSelectedScheduleId(null);
+      setDirtyEditor(false);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "スケジュールを削除できませんでした");
+    }
   }
 
-  function restoreSchedule(schedule: Schedule) {
-    setTrashSchedules((current) => current.filter((item) => item.id !== schedule.id));
-    saveSchedule(schedule);
+  async function restoreSchedule(schedule: Schedule) {
+    try {
+      const payload = await postApiJson<{ schedule: Schedule }>(`/api/trash/${encodeURIComponent(schedule.id)}/restore`);
+      setTrashSchedules((current) => current.filter((item) => item.id !== payload.schedule.id));
+      setSchedules((current) => [...current, payload.schedule]);
+      setSelectedScheduleId(payload.schedule.id);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "スケジュールを復元できませんでした");
+    }
   }
 
   function duplicateSchedule(schedule: Schedule) {
+    if (!confirmDiscardIfDirty()) return;
     const duplicated = {
       ...schedule,
       id: createScheduleId(),
       siteName: `${schedule.siteName} コピー`,
       readBy: [],
     };
-    saveSchedule(duplicated);
+    void saveSchedule(duplicated);
   }
 
   function createNewSchedule() {
     if (role !== "Admin") return;
+    if (!confirmDiscardIfDirty()) return;
     const dateKey = selectedDateKey ?? toDateKey(new Date());
     const { startTime, endTime } = getDefaultScheduleTimeRange(new Date());
     const schedule: Schedule = {
@@ -195,6 +279,7 @@ export default function App() {
       siteName: "新規現場",
       content: "",
       date: dateKey,
+      endDate: dateKey,
       startTime,
       endTime,
       members: [],
@@ -206,24 +291,19 @@ export default function App() {
       readBy: [],
       isPersonal: false,
     };
-    saveSchedule(schedule);
+    void saveSchedule(schedule);
     setSidebarOpen(true);
   }
 
-  function markSelectedAsRead() {
+  async function markSelectedAsRead() {
     if (!selectedSchedule) return;
-    saveSchedule({
-      ...selectedSchedule,
-      readBy: selectedSchedule.readBy.includes(currentMember)
-        ? selectedSchedule.readBy
-        : [...selectedSchedule.readBy, currentMember],
-    });
-  }
-
-  function openTrash() {
-    setSettingOpen(false);
-    setSidebarMode("trash");
-    setSidebarOpen(true);
+    try {
+      const payload = await postApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(selectedSchedule.id)}/read`, { member: currentMember });
+      setSchedules((current) => current.map((schedule) => (schedule.id === payload.schedule.id ? payload.schedule : schedule)));
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "既読にできませんでした");
+    }
   }
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
@@ -242,27 +322,42 @@ export default function App() {
     window.addEventListener("pointerup", onPointerUp);
   }
 
-  function addTag() {
-    setTags((current) => [
-      ...current,
-      { id: createScheduleId(), name: "新しいタグ", color: "#64748b" },
-    ]);
+  async function addTag() {
+    try {
+      const payload = await postApiJson<{ tag: Tag }>("/api/tags", { id: createScheduleId(), name: "新しいタグ", color: "#64748b" });
+      setTags((current) => [...current, payload.tag]);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "タグを追加できませんでした");
+    }
   }
 
-  function updateTag(tagId: string, patch: Partial<Tag>) {
-    setTags((current) => current.map((tag) => (tag.id === tagId ? { ...tag, ...patch } : tag)));
+  async function updateTag(tagId: string, patch: Partial<Tag>) {
+    try {
+      const payload = await patchApiJson<{ tag: Tag }>(`/api/tags/${encodeURIComponent(tagId)}`, patch);
+      setTags((current) => current.map((tag) => (tag.id === tagId ? payload.tag : tag)));
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "タグを更新できませんでした");
+    }
   }
 
   function openTagContextMenu(tag: Tag, x: number, y: number) {
     setTagContextMenu({ tag, x, y });
   }
 
-  function deleteTag(tag: Tag) {
-    setTags((current) => current.filter((item) => item.id !== tag.id));
-    setSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
-    setTrashSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
-    setTagFilters((current) => current.filter((color) => color !== tag.color));
-    setTagContextMenu(null);
+  async function deleteTag(tag: Tag) {
+    try {
+      await deleteApiJson<{ tag: Tag }>(`/api/tags/${encodeURIComponent(tag.id)}`);
+      setTags((current) => current.filter((item) => item.id !== tag.id));
+      setSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
+      setTrashSchedules((current) => current.map((schedule) => removeTagFromSchedule(schedule, tag.color)));
+      setTagFilters((current) => current.filter((color) => color !== tag.color));
+      setTagContextMenu(null);
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "タグを削除できませんでした");
+    }
   }
 
   function moveAnchor(step: number) {
@@ -276,6 +371,7 @@ export default function App() {
   }
 
   function selectDate(dateKey: string) {
+    if (!confirmDiscardIfDirty()) return;
     setSelectedDateKey(dateKey);
     setAnchorDate(dateKeyToDate(dateKey));
   }
@@ -325,10 +421,15 @@ export default function App() {
     return <LoginView onAuthenticated={setAuthSession} />;
   }
 
+  const sidebarTitleButton = (
+    <button className="icon-button calendar-title-sidebar-button" aria-label={sidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"} onClick={() => setSidebarOpen((value) => !value)}>
+      <PanelRightOpen size={18} />
+    </button>
+  );
+
   return (
     <div className="app-shell">
       <TopBar
-        sidebarOpen={sidebarOpen}
         viewMode={viewMode}
         role={role}
         searchQuery={searchQuery}
@@ -340,9 +441,11 @@ export default function App() {
         userName={authSession.user.name}
         groupId={authSession.user.groupId}
         groupMembers={groupMembers}
+        groupUsers={groupUsers}
         groupMembersError={groupMembersError}
+        onUpdateGroupMember={updateGroupMember}
+        onRemoveGroupMember={removeGroupMember}
         onGroupMembersRefresh={() => refreshGroupMembers(authSession.user.groupId)}
-        onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onOpenSetting={() => setSettingOpen(true)}
         onOpenNotifications={() => setNotificationOpen((value) => !value)}
         onViewModeChange={changeViewMode}
@@ -359,6 +462,18 @@ export default function App() {
         className={`workspace ${sidebarOpen ? "sidebar-visible" : "sidebar-hidden"}`}
         style={{ gridTemplateColumns: sidebarOpen ? `minmax(0, 1fr) ${sidebarWidth}px` : "minmax(0, 1fr) 0px" }}
       >
+        {apiMessage && <div className="api-message-banner">{apiMessage}</div>}
+        {searchActive && (
+          <SearchResultPanel
+            schedules={visibleSchedules}
+            onSelectSchedule={openSchedule}
+            onClear={() => {
+              setSearchQuery("");
+              setMemberFilters([]);
+              setTagFilters([]);
+            }}
+          />
+        )}
         {notificationOpen && (
           <NotificationPanel
             unreadSchedules={unreadSchedules}
@@ -376,6 +491,7 @@ export default function App() {
             role={role}
             taskCellPriority={taskCellPriority}
             selectedDateKey={selectedDateKey}
+            titleAction={sidebarTitleButton}
             onSelectDate={selectDate}
             onSelectSchedule={openSchedule}
             onOpenHiddenList={openOverlapList}
@@ -388,6 +504,7 @@ export default function App() {
             currentMinute={currentMinute}
             role={role}
             taskCellPriority={taskCellPriority}
+            titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
           />
@@ -399,6 +516,7 @@ export default function App() {
             currentMinute={currentMinute}
             role={role}
             taskCellPriority={taskCellPriority}
+            titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
           />
@@ -409,7 +527,6 @@ export default function App() {
           mode={sidebarMode}
           selectedSchedule={selectedSchedule}
           overlapList={overlapList}
-          trashSchedules={trashSchedules}
           tags={tags}
           groupMembers={groupMembers}
           groupMembersError={groupMembersError}
@@ -419,22 +536,23 @@ export default function App() {
           onDeleteSchedule={deleteSchedule}
           onDuplicateSchedule={duplicateSchedule}
           onMarkAsRead={markSelectedAsRead}
-          onRestoreSchedule={restoreSchedule}
           onAddTag={addTag}
           onOpenTagContextMenu={openTagContextMenu}
           onStartResize={startSidebarResize}
+          onDirtyChange={setDirtyEditor}
         />
       </main>
       <SettingDrawer
         open={settingOpen}
         tags={tags}
         taskCellPriority={taskCellPriority}
+        trashSchedules={trashSchedules}
         captureLoading={captureLoading}
         onDownloadCalendarImage={downloadCalendarImage}
         onTaskCellPriorityChange={setTaskCellPriority}
         onAddTag={addTag}
         onUpdateTag={updateTag}
-        onOpenTrash={openTrash}
+        onRestoreSchedule={restoreSchedule}
         onOpenTagContextMenu={openTagContextMenu}
         onClose={() => setSettingOpen(false)}
       />
@@ -493,7 +611,6 @@ export default function App() {
 }
 
 type TopBarProps = {
-  sidebarOpen: boolean;
   viewMode: CalendarViewMode;
   role: UserRole;
   searchQuery: string;
@@ -505,9 +622,11 @@ type TopBarProps = {
   userName: string;
   groupId: string;
   groupMembers: string[];
+  groupUsers: AuthUser[];
   groupMembersError: string;
+  onUpdateGroupMember: (userId: string, patch: Partial<Pick<AuthUser, "name" | "role">>) => void;
+  onRemoveGroupMember: (userId: string) => void;
   onGroupMembersRefresh: () => void;
-  onToggleSidebar: () => void;
   onOpenSetting: () => void;
   onOpenNotifications: () => void;
   onViewModeChange: (mode: CalendarViewMode) => void;
@@ -522,7 +641,6 @@ type TopBarProps = {
 };
 
 function TopBar({
-  sidebarOpen,
   viewMode,
   role,
   searchQuery,
@@ -534,9 +652,11 @@ function TopBar({
   userName,
   groupId,
   groupMembers,
+  groupUsers,
   groupMembersError,
+  onUpdateGroupMember,
+  onRemoveGroupMember,
   onGroupMembersRefresh,
-  onToggleSidebar,
   onOpenSetting,
   onOpenNotifications,
   onViewModeChange,
@@ -555,6 +675,7 @@ function TopBar({
   const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [joinRequestLoading, setJoinRequestLoading] = useState(false);
   const [joinRequestMessage, setJoinRequestMessage] = useState("");
+  const [editingMemberNameById, setEditingMemberNameById] = useState<Record<string, string>>({});
   const hasFilter = memberFilters.length > 0 || tagFilters.length > 0;
   const userInitial = getUserInitial(userName);
   const pendingJoinRequests = joinRequests.filter((request) => request.status === "pending");
@@ -661,14 +782,18 @@ function TopBar({
         )}
       </div>
       <div className="topbar-group">
-        <button className="icon-button" aria-label={sidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"} onClick={onToggleSidebar}>
-          <PanelRightOpen size={18} />
-        </button>
         <div className="segmented-control" aria-label="表示切替">
           <button className={viewMode === "month" ? "active" : ""} onClick={() => onViewModeChange("month")}>月</button>
           <button className={viewMode === "week" ? "active" : ""} onClick={() => onViewModeChange("week")}>週</button>
           <button className={viewMode === "day" ? "active" : ""} onClick={() => onViewModeChange("day")}>日</button>
         </div>
+        <label className="view-mode-select" aria-label="表示切替">
+          <select value={viewMode} onChange={(event) => onViewModeChange(event.target.value as CalendarViewMode)}>
+            <option value="month">月</option>
+            <option value="week">週</option>
+            <option value="day">日</option>
+          </select>
+        </label>
         <button className="secondary-button" onClick={onToday}>
           <CalendarDays size={16} />
           <span className="today-button-label">今日</span>
@@ -703,7 +828,32 @@ function TopBar({
                 <strong>{groupId}</strong>
               </div>
               <div className="account-member-list">
-                {groupMembers.length === 0 ? (
+                {groupUsers.length > 0 ? (
+                  groupUsers.map((member) => {
+                    const draftName = editingMemberNameById[member.id] ?? member.name;
+
+                    return (
+                      <div className="account-member-item editable" key={member.id}>
+                        <span className="account-member-avatar">{getUserInitial(member.name)}</span>
+                        <input
+                          value={draftName}
+                          aria-label={`${member.name}の表示名`}
+                          onChange={(event) => setEditingMemberNameById((current) => ({ ...current, [member.id]: event.target.value }))}
+                          onBlur={() => {
+                            if (draftName.trim() && draftName.trim() !== member.name) onUpdateGroupMember(member.id, { name: draftName.trim() });
+                          }}
+                        />
+                        <select value={member.role} onChange={(event) => onUpdateGroupMember(member.id, { role: event.target.value as UserRole })}>
+                          <option value="Admin">Admin</option>
+                          <option value="User">User</option>
+                        </select>
+                        <button className="icon-button" aria-label={`${member.name}を削除`} onClick={() => onRemoveGroupMember(member.id)}>
+                          <Trash2 size={15} />
+                        </button>
+                      </div>
+                    );
+                  })
+                ) : groupMembers.length === 0 ? (
                   <div className="empty-state compact">{groupMembersError ? "メンバーを取得できません" : "メンバーはいません"}</div>
                 ) : (
                   groupMembers.map((member) => (
@@ -817,15 +967,6 @@ function TopBar({
                 <Settings size={16} />
                 設定
               </button>
-              <button
-                className="secondary-button full-width-button"
-                onClick={() => {
-                  setMobileMenuOpen(false);
-                  onLogout();
-                }}
-              >
-                ログアウト
-              </button>
               {role === "Admin" && (
                 <button
                   className="primary-button full-width-button"
@@ -874,8 +1015,32 @@ async function getApiJson<T>(path: string): Promise<T> {
   return requestApiJson<T>(path, { method: "GET" });
 }
 
-async function postApiJson<T>(path: string): Promise<T> {
-  return requestApiJson<T>(path, { method: "POST" });
+async function postApiJson<T>(path: string, body?: unknown): Promise<T> {
+  return requestApiJson<T>(path, {
+    method: "POST",
+    headers: body ? { "Content-Type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+}
+
+async function putApiJson<T>(path: string, body: unknown): Promise<T> {
+  return requestApiJson<T>(path, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function patchApiJson<T>(path: string, body: unknown): Promise<T> {
+  return requestApiJson<T>(path, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+async function deleteApiJson<T>(path: string): Promise<T> {
+  return requestApiJson<T>(path, { method: "DELETE" });
 }
 
 async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
@@ -924,6 +1089,43 @@ function NotificationPanel({ unreadSchedules, onSelectSchedule }: { unreadSchedu
   );
 }
 
+function SearchResultPanel({
+  schedules,
+  onSelectSchedule,
+  onClear,
+}: {
+  schedules: Schedule[];
+  onSelectSchedule: (schedule: Schedule) => void;
+  onClear: () => void;
+}) {
+  const sortedSchedules = [...schedules].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`));
+
+  return (
+    <aside className="search-result-panel">
+      <div className="search-result-head">
+        <div>
+          <strong>検索結果</strong>
+          <span>{sortedSchedules.length}件</span>
+        </div>
+        <button className="text-button" onClick={onClear}>クリア</button>
+      </div>
+      {sortedSchedules.length === 0 ? (
+        <div className="empty-state compact">該当するタスクはありません</div>
+      ) : (
+        <div className="search-result-list">
+          {sortedSchedules.slice(0, 20).map((schedule) => (
+            <button className="search-result-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+              <span>{formatScheduleDateRange(schedule)} {schedule.startTime} ~ {schedule.endTime}</span>
+              <strong>{schedule.siteName}</strong>
+              <small>{schedule.members.join("、") || "メンバー未指定"}</small>
+            </button>
+          ))}
+        </div>
+      )}
+    </aside>
+  );
+}
+
 function TagContextMenu({
   tag,
   x,
@@ -958,24 +1160,26 @@ function SettingDrawer({
   open,
   tags,
   taskCellPriority,
+  trashSchedules,
   captureLoading,
   onDownloadCalendarImage,
   onTaskCellPriorityChange,
   onAddTag,
   onUpdateTag,
-  onOpenTrash,
+  onRestoreSchedule,
   onOpenTagContextMenu,
   onClose,
 }: {
   open: boolean;
   tags: Tag[];
   taskCellPriority: TaskCellPriorityItem[];
+  trashSchedules: Schedule[];
   captureLoading: boolean;
   onDownloadCalendarImage: () => void;
   onTaskCellPriorityChange: (priority: TaskCellPriorityItem[]) => void;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
-  onOpenTrash: () => void;
+  onRestoreSchedule: (schedule: Schedule) => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onClose: () => void;
 }) {
@@ -1064,10 +1268,28 @@ function SettingDrawer({
             </div>
           ))}
         </div>
-        <button className="secondary-button full-width-button" onClick={onOpenTrash}>
-          <Trash2 size={16} />
-          ゴミ箱を開く
-        </button>
+        <div className="settings-section">
+          <div className="settings-section-head">
+            <h3>ゴミ箱</h3>
+            <span className="settings-count-label">{trashSchedules.length}件</span>
+          </div>
+          {trashSchedules.length === 0 ? (
+            <div className="empty-state compact">ゴミ箱は空です</div>
+          ) : (
+            <div className="settings-trash-list">
+              {trashSchedules.map((schedule) => (
+                <div className="settings-trash-item" key={schedule.id}>
+                  <div>
+                    <span>{formatScheduleDateRange(schedule)} {schedule.startTime} ~ {schedule.endTime}</span>
+                    <strong>{schedule.siteName}</strong>
+                    <small>{schedule.members.join("、") || "メンバー未指定"}</small>
+                  </div>
+                  <button className="secondary-button" onClick={() => onRestoreSchedule(schedule)}>復元</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </aside>
     </>
   );
@@ -1093,6 +1315,7 @@ function filterSchedulesByUi(
       schedule.siteName,
       schedule.content,
       schedule.date,
+      schedule.endDate,
       schedule.startTime,
       schedule.endTime,
       schedule.members.join(" "),
@@ -1134,6 +1357,19 @@ function createScheduleId() {
 
 function getScheduleTagColors(schedule: Schedule) {
   return schedule.tagColors?.length ? schedule.tagColors : [schedule.tagColor];
+}
+
+function normalizeScheduleDateRange(schedule: Schedule): Schedule {
+  const endDate = schedule.endDate ?? schedule.date;
+  return {
+    ...schedule,
+    endDate: endDate < schedule.date ? schedule.date : endDate,
+  };
+}
+
+function formatScheduleDateRange(schedule: Schedule) {
+  const endDate = schedule.endDate ?? schedule.date;
+  return schedule.date === endDate ? schedule.date : `${schedule.date} ~ ${endDate}`;
 }
 
 function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {

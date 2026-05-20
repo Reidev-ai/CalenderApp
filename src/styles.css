@@ -268,6 +268,29 @@ button {
   background: #ffffff;
 }
 
+.account-member-item.editable {
+  grid-template-columns: 28px minmax(0, 1fr) 78px 32px;
+}
+
+.account-member-item input,
+.account-member-item select {
+  min-width: 0;
+  height: 32px;
+  border: 1px solid #d7dce5;
+  border-radius: 7px;
+  background: #ffffff;
+  color: #303846;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.account-member-item .icon-button {
+  width: 32px;
+  height: 32px;
+  color: #b42318;
+}
+
 .account-member-item > span:last-child {
   min-width: 0;
   overflow: hidden;
@@ -564,6 +587,21 @@ button {
   background: #f6f7f9;
 }
 
+.view-mode-select {
+  display: none;
+}
+
+.view-mode-select select {
+  height: 38px;
+  border: 1px solid #d4d9e2;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #303846;
+  padding: 0 18px 0 10px;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .segmented-control button,
 .mode-tabs button {
   border: 0;
@@ -584,6 +622,107 @@ button {
   display: grid;
   overflow: hidden;
   transition: grid-template-columns 180ms ease;
+}
+
+.api-message-banner {
+  position: absolute;
+  top: 10px;
+  left: 50%;
+  z-index: 12;
+  max-width: min(720px, calc(100% - 32px));
+  transform: translateX(-50%);
+  padding: 9px 12px;
+  border: 1px solid #f0c36d;
+  border-radius: 8px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 800;
+  box-shadow: 0 12px 28px rgb(15 23 42 / 0.12);
+}
+
+.search-result-panel {
+  position: absolute;
+  top: 12px;
+  left: 18px;
+  z-index: 11;
+  width: min(380px, calc(100% - 36px));
+  max-height: min(520px, calc(100% - 24px));
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  overflow: hidden;
+  border: 1px solid #d9dde4;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 18px 42px rgb(15 23 42 / 0.16);
+}
+
+.search-result-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.search-result-head > div {
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.search-result-head strong {
+  color: #17202d;
+  font-size: 14px;
+}
+
+.search-result-head span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.search-result-list {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+}
+
+.search-result-item {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid #e1e5ec;
+  border-radius: 8px;
+  background: #ffffff;
+  text-align: left;
+}
+
+.search-result-item span,
+.search-result-item strong,
+.search-result-item small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-result-item span,
+.search-result-item small {
+  color: #667085;
+  font-size: 12px;
+}
+
+.search-result-item strong {
+  color: #17202d;
+  font-size: 13px;
 }
 
 .calendar-panel {
@@ -702,8 +841,13 @@ button {
   height: 48px;
   display: flex;
   align-items: center;
-  justify-content: flex-start;
+  justify-content: space-between;
+  gap: 12px;
   padding: 0 4px;
+}
+
+.calendar-title-sidebar-button {
+  flex: 0 0 38px;
 }
 
 .month-title-row h1,
@@ -1542,6 +1686,61 @@ button:disabled {
   font-size: 15px;
 }
 
+.settings-count-label {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.settings-trash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.settings-trash-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #d8dde6;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.settings-trash-item div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-trash-item span,
+.settings-trash-item small,
+.settings-trash-item strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-trash-item span,
+.settings-trash-item small {
+  color: #697386;
+  font-size: 12px;
+}
+
+.settings-trash-item strong {
+  color: #17202d;
+  font-size: 13px;
+}
+
+.settings-trash-item .secondary-button {
+  height: 34px;
+  padding: 0 10px;
+}
+
 .priority-sort-list {
   display: flex;
   flex-direction: column;
@@ -1779,6 +1978,14 @@ button:disabled {
 
   .topbar-group {
     gap: 6px;
+  }
+
+  .topbar .segmented-control {
+    display: none;
+  }
+
+  .view-mode-select {
+    display: inline-flex;
   }
 
   .mobile-menu-overlay {
@@ -2046,7 +2253,19 @@ button:disabled {
   }
 
   .sidebar-header {
-    padding: 12px;
+    padding: 6px 8px;
+  }
+
+  .mode-tabs {
+    min-height: 30px;
+    padding: 2px;
+    gap: 3px;
+  }
+
+  .mode-tabs button {
+    min-height: 26px;
+    padding: 0 5px;
+    font-size: 11px;
   }
 
   .editor-body,

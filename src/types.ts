@@ -3,6 +3,7 @@ export type Schedule = {
   siteName: string;
   content: string;
   date: string;
+  endDate?: string;
   startTime: string;
   endTime: string;
   members: string[];

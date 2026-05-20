@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { JsonStore } from "./store.ts";
-import type { LoginBody, RegisterBody, SchedulePatch } from "./domain.ts";
+import type { LoginBody, MemberPatch, RegisterBody, SchedulePatch } from "./domain.ts";
 import { HttpError, notFound, parseJsonBody, sendJson, sendNoContent } from "./http.ts";
 import {
   approveJoinRequest,
@@ -15,7 +15,9 @@ import {
   markScheduleRead,
   moveScheduleToTrash,
   registerUser,
+  removeGroupMember,
   restoreSchedule,
+  updateGroupMember,
   updateSchedule,
   updateTag,
 } from "./services.ts";
@@ -82,6 +84,24 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   if (method === "GET" && groupMembersMatch) {
     const data = await store.read();
     return ok(listGroupMembers(data, groupMembersMatch[1]));
+  }
+
+  const groupMemberMatch = pathname.match(/^\/api\/groups\/([^/]+)\/members\/([^/]+)$/);
+  if (method === "PATCH" && groupMemberMatch) {
+    const body = await parseJsonBody<MemberPatch>(req);
+    let response: unknown;
+    await store.update((data) => {
+      response = updateGroupMember(data, groupMemberMatch[1], groupMemberMatch[2], body);
+    });
+    return ok(response);
+  }
+
+  if (method === "DELETE" && groupMemberMatch) {
+    let response: unknown;
+    await store.update((data) => {
+      response = removeGroupMember(data, groupMemberMatch[1], groupMemberMatch[2]);
+    });
+    return ok(response);
   }
 
   if (method === "GET" && pathname === "/api/join-requests") {
