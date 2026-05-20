@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
-import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { CalendarViewMode, LaidOutSchedule, Schedule, SidebarMode, Tag, UserRole } from "./types";
 import { formatDateLabel, formatMonthTitle, getMonthGridDays, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
@@ -34,6 +34,14 @@ const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
 const tagStorageKey = "calender-tags-v1";
+const defaultTaskCellPriority: TaskCellPriorityItem[] = [
+  { id: "time", label: "開始予定時間" },
+  { id: "siteName", label: "現場名" },
+  { id: "members", label: "メンバー" },
+  { id: "contractor", label: "元請け業者" },
+  { id: "address", label: "住所" },
+  { id: "memo", label: "メモ" },
+];
 const defaultTags: Tag[] = [
   { id: "blue", name: "通常", color: "#3b82f6" },
   { id: "green", name: "確認", color: "#22c55e" },
@@ -71,6 +79,7 @@ export default function App() {
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
+  const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(defaultTaskCellPriority);
   const [tagContextMenu, setTagContextMenu] = useState<{ tag: Tag; x: number; y: number } | null>(null);
   const now = useCurrentTime();
   const currentMinute = now.getHours() * 60 + now.getMinutes();
@@ -239,8 +248,20 @@ export default function App() {
     });
   }
 
+  function selectDate(dateKey: string) {
+    setSelectedDateKey(dateKey);
+    setAnchorDate(dateKeyToDate(dateKey));
+  }
+
+  function changeViewMode(mode: CalendarViewMode) {
+    if (selectedDateKey) setAnchorDate(dateKeyToDate(selectedDateKey));
+    setViewMode(mode);
+  }
+
   function goToday() {
-    setAnchorDate(new Date());
+    const today = new Date();
+    setAnchorDate(today);
+    setSelectedDateKey(toDateKey(today));
   }
 
   return (
@@ -258,7 +279,7 @@ export default function App() {
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onOpenSetting={() => setSettingOpen(true)}
         onOpenNotifications={() => setNotificationOpen((value) => !value)}
-        onViewModeChange={setViewMode}
+        onViewModeChange={changeViewMode}
         onRoleChange={setRole}
         onSearchQueryChange={setSearchQuery}
         onMemberFiltersChange={setMemberFilters}
@@ -286,8 +307,10 @@ export default function App() {
             anchorDate={anchorDate}
             monthDates={monthDates}
             schedules={visibleSchedules}
+            role={role}
+            taskCellPriority={taskCellPriority}
             selectedDateKey={selectedDateKey}
-            onSelectDate={setSelectedDateKey}
+            onSelectDate={selectDate}
             onSelectSchedule={openSchedule}
             onOpenHiddenList={openOverlapList}
           />
@@ -297,6 +320,8 @@ export default function App() {
             schedules={visibleSchedules}
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
+            role={role}
+            taskCellPriority={taskCellPriority}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
           />
@@ -306,6 +331,8 @@ export default function App() {
             schedules={visibleSchedules}
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
+            role={role}
+            taskCellPriority={taskCellPriority}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
           />
@@ -332,9 +359,9 @@ export default function App() {
       </main>
       <SettingDrawer
         open={settingOpen}
-        maxVisibleColumns={maxVisibleColumns}
         tags={tags}
-        onMaxVisibleColumnsChange={setMaxVisibleColumns}
+        taskCellPriority={taskCellPriority}
+        onTaskCellPriorityChange={setTaskCellPriority}
         onAddTag={addTag}
         onUpdateTag={updateTag}
         onOpenTrash={openTrash}
@@ -376,6 +403,11 @@ type TopBarProps = {
   onToday: () => void;
   onPrevious: () => void;
   onNext: () => void;
+};
+
+type TaskCellPriorityItem = {
+  id: "time" | "siteName" | "members" | "contractor" | "address" | "memo";
+  label: string;
 };
 
 function TopBar({
@@ -580,6 +612,8 @@ type CalendarMonthDesktopProps = {
   anchorDate: Date;
   monthDates: Date[];
   schedules: Schedule[];
+  role: UserRole;
+  taskCellPriority: TaskCellPriorityItem[];
   selectedDateKey: string | null;
   onSelectDate: (dateKey: string) => void;
   onSelectSchedule: (schedule: Schedule) => void;
@@ -590,6 +624,8 @@ function CalendarMonthDesktop({
   anchorDate,
   monthDates,
   schedules,
+  role,
+  taskCellPriority,
   selectedDateKey,
   onSelectDate,
   onSelectSchedule,
@@ -646,7 +682,7 @@ function CalendarMonthDesktop({
               <div className="month-task-list">
                 {visibleSchedules.map((schedule) => (
                   <button
-                    className="month-task-chip"
+                    className={`month-task-chip ${isUnreadForCurrentUser(schedule, role) ? "unread-task" : ""}`}
                     style={{ borderLeftColor: getPrimaryTagColor(schedule) }}
                     key={schedule.id}
                     onClick={(event) => {
@@ -654,8 +690,8 @@ function CalendarMonthDesktop({
                       onSelectSchedule(schedule);
                     }}
                   >
-                    <strong>{schedule.startTime}</strong>
-                    <span>{schedule.siteName}</span>
+                    {isUnreadForCurrentUser(schedule, role) && <UnreadBadge />}
+                    {taskCellPriority.slice(0, 2).map((priorityItem) => renderTaskCellPriorityItem(priorityItem, schedule, " ~ "))}
                   </button>
                 ))}
                 {hiddenSchedules.length > 0 && (
@@ -683,11 +719,13 @@ type CalendarWeekDesktopProps = {
   schedules: Schedule[];
   fallbackMaxVisibleColumns: number;
   currentMinute: number;
+  role: UserRole;
+  taskCellPriority: TaskCellPriorityItem[];
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
+function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const dayColumnWidth = gridWidth > 0 ? gridWidth / weekDates.length : 0;
@@ -720,7 +758,7 @@ function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, 
                 {laidOut
                   .filter((item) => !item.hidden)
                   .map((item) => (
-                    <TaskCell key={item.schedule.id} item={item} onClick={() => onSelectSchedule(item.schedule)} />
+                    <TaskCell key={item.schedule.id} item={item} role={role} priority={taskCellPriority} onClick={() => onSelectSchedule(item.schedule)} />
                   ))}
                 {hiddenByGroup.map((group) => (
                   <button
@@ -746,11 +784,13 @@ type CalendarDayDesktopProps = {
   schedules: Schedule[];
   fallbackMaxVisibleColumns: number;
   currentMinute: number;
+  role: UserRole;
+  taskCellPriority: TaskCellPriorityItem[];
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
 };
 
-function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const visibleColumnCount = getVisibleStackCount(gridWidth, fallbackMaxVisibleColumns);
@@ -775,7 +815,7 @@ function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, curren
             {laidOut
               .filter((item) => !item.hidden)
               .map((item) => (
-                <TaskCell key={item.schedule.id} item={item} onClick={() => onSelectSchedule(item.schedule)} />
+                <TaskCell key={item.schedule.id} item={item} role={role} priority={taskCellPriority} onClick={() => onSelectSchedule(item.schedule)} />
               ))}
             {hiddenByGroup.map((group) => (
               <button
@@ -840,7 +880,7 @@ function TimeAxis({ currentMinute }: { currentMinute: number }) {
   );
 }
 
-function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => void }) {
+function TaskCell({ item, role, priority, onClick }: { item: LaidOutSchedule; role: UserRole; priority: TaskCellPriorityItem[]; onClick: () => void }) {
   const cellRef = useRef<HTMLButtonElement | null>(null);
   const [cellWidth, setCellWidth] = useState(0);
   const width = `calc(${100 / item.columnCount}% - 6px)`;
@@ -849,10 +889,7 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
   const widthCapacity = getTaskCellWidthCapacity(cellWidth);
   const heightCapacity = getTaskCellHeightCapacity(item.heightPercent);
   const visibleDetailCount = Math.min(widthCapacity, heightCapacity);
-  const showSiteName = visibleDetailCount >= 2;
-  const showMembers = visibleDetailCount >= 3;
-  const showContractor = visibleDetailCount >= 4;
-  const showAddress = visibleDetailCount >= 5;
+  const visibleItems = priority.slice(0, visibleDetailCount);
   const timeSeparator = isNarrow ? " | " : " ~ ";
 
   useEffect(() => {
@@ -871,7 +908,7 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
   return (
     <button
       ref={cellRef}
-      className={`task-cell ${isNarrow ? "narrow" : ""}`}
+      className={`task-cell ${isNarrow ? "narrow" : ""} ${isUnreadForCurrentUser(item.schedule, role) ? "unread-task" : ""}`}
       style={{
         top: `${item.topPercent}%`,
         height: `${item.heightPercent}%`,
@@ -881,15 +918,34 @@ function TaskCell({ item, onClick }: { item: LaidOutSchedule; onClick: () => voi
       }}
       onClick={onClick}
     >
-      <strong>
-        {item.schedule.startTime}{timeSeparator}{item.schedule.endTime}
-      </strong>
-      {showSiteName && <span>{item.schedule.siteName}</span>}
-      {showMembers && <span>{item.schedule.members.join("、")}</span>}
-      {showContractor && <span>{item.schedule.contractor}</span>}
-      {showAddress && <span>{item.schedule.address}</span>}
+      {isUnreadForCurrentUser(item.schedule, role) && <UnreadBadge />}
+      {visibleItems.map((priorityItem) => renderTaskCellPriorityItem(priorityItem, item.schedule, timeSeparator))}
     </button>
   );
+}
+
+function UnreadBadge() {
+  return <span className="unread-badge">未</span>;
+}
+
+function renderTaskCellPriorityItem(item: TaskCellPriorityItem, schedule: Schedule, timeSeparator: string) {
+  if (item.id === "time") {
+    return (
+      <strong key={item.id}>
+        {schedule.startTime}{timeSeparator}{schedule.endTime}
+      </strong>
+    );
+  }
+
+  const valueById: Record<Exclude<TaskCellPriorityItem["id"], "time">, string> = {
+    siteName: schedule.siteName,
+    members: schedule.members.join("、"),
+    contractor: schedule.contractor,
+    address: schedule.address,
+    memo: schedule.memo,
+  };
+
+  return <span key={item.id}>{valueById[item.id]}</span>;
 }
 
 function groupHiddenSchedules(items: LaidOutSchedule[]) {
@@ -1241,9 +1297,9 @@ function TagContextMenu({
 
 function SettingDrawer({
   open,
-  maxVisibleColumns,
   tags,
-  onMaxVisibleColumnsChange,
+  taskCellPriority,
+  onTaskCellPriorityChange,
   onAddTag,
   onUpdateTag,
   onOpenTrash,
@@ -1251,15 +1307,25 @@ function SettingDrawer({
   onClose,
 }: {
   open: boolean;
-  maxVisibleColumns: number;
   tags: Tag[];
-  onMaxVisibleColumnsChange: (columns: number) => void;
+  taskCellPriority: TaskCellPriorityItem[];
+  onTaskCellPriorityChange: (priority: TaskCellPriorityItem[]) => void;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onOpenTrash: () => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onClose: () => void;
 }) {
+  const [draggedPriorityIndex, setDraggedPriorityIndex] = useState<number | null>(null);
+
+  function movePriorityItem(fromIndex: number, toIndex: number) {
+    if (fromIndex === toIndex) return;
+    const next = [...taskCellPriority];
+    const [item] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, item);
+    onTaskCellPriorityChange(next);
+  }
+
   return (
     <>
       {open && <button className="drawer-overlay" aria-label="設定を閉じる" onClick={onClose} />}
@@ -1268,10 +1334,37 @@ function SettingDrawer({
           <h2>設定</h2>
           <button className="icon-button" onClick={onClose}>×</button>
         </div>
-        <label className="field">
+        <div className="field">
           <span>TaskCell表示優先順位</span>
-          <textarea defaultValue={"開始予定時間\n現場名\nメンバー\n元請け業者\n住所\nメモ"} rows={7} />
-        </label>
+          <div className="priority-sort-list">
+            {taskCellPriority.map((item, index) => (
+              <button
+                type="button"
+                className={`priority-sort-item ${draggedPriorityIndex === index ? "dragging" : ""}`}
+                draggable
+                key={item.id}
+                onDragStart={(event) => {
+                  setDraggedPriorityIndex(index);
+                  event.dataTransfer.effectAllowed = "move";
+                  event.dataTransfer.setData("text/plain", item.id);
+                }}
+                onDragOver={(event) => {
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                }}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  if (draggedPriorityIndex !== null) movePriorityItem(draggedPriorityIndex, index);
+                  setDraggedPriorityIndex(null);
+                }}
+                onDragEnd={() => setDraggedPriorityIndex(null)}
+              >
+                <GripVertical size={16} />
+                <span>{item.label}</span>
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="settings-section">
           <div className="settings-section-head">
             <h3>タグ</h3>
@@ -1375,6 +1468,10 @@ function getDefaultScheduleTimeRange(date: Date) {
   };
 }
 
+function dateKeyToDate(dateKey: string) {
+  return new Date(`${dateKey}T00:00:00`);
+}
+
 function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
   if (dayColumnWidth <= 0) return fallback;
   return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
@@ -1392,6 +1489,10 @@ function getVisibleMonthTaskCount(scheduleCount: number, dayCellHeight: number, 
 
   const heightReservedForHiddenCount = metrics.hiddenCountHeight + metrics.taskGap;
   return Math.max(0, Math.floor((availableHeight - heightReservedForHiddenCount + metrics.taskGap) / (metrics.taskChipHeight + metrics.taskGap)));
+}
+
+function isUnreadForCurrentUser(schedule: Schedule, role: UserRole) {
+  return role === "User" && !schedule.readBy.includes(currentMember);
 }
 
 function getTaskCellWidthCapacity(width: number) {

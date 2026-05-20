@@ -481,6 +481,7 @@ button {
 }
 
 .month-task-chip {
+  position: relative;
   min-height: 26px;
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -493,6 +494,35 @@ button {
   background: #ffffff;
   color: #303846;
   text-align: left;
+}
+
+.month-task-chip.unread-task,
+.task-cell.unread-task {
+  border-color: #f59e0b;
+  background: #fff7ed;
+}
+
+.unread-badge {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  z-index: 3;
+  min-width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 1px solid #ffffff;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #ffffff !important;
+  font-size: 10px !important;
+  font-weight: 700;
+  line-height: 1;
+  writing-mode: horizontal-tb;
+  text-orientation: mixed;
+  pointer-events: none;
 }
 
 .month-task-chip strong,
@@ -1055,6 +1085,51 @@ button:disabled {
   font-size: 15px;
 }
 
+.priority-sort-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.priority-sort-item {
+  width: 100%;
+  min-height: 40px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border: 1px solid #d7dce5;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #303846;
+  text-align: left;
+  cursor: grab;
+}
+
+.priority-sort-item:active {
+  cursor: grabbing;
+}
+
+.priority-sort-item.dragging {
+  opacity: 0.52;
+  border-color: #93c5fd;
+  background: #eff6ff;
+}
+
+.priority-sort-item svg {
+  flex: 0 0 auto;
+  color: #697386;
+}
+
+.priority-sort-item span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .tag-editor-row {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
@@ -1462,6 +1537,15 @@ button:disabled {
     gap: 3px;
     padding: 2px 4px;
     border-left-width: 3px;
+  }
+
+  .unread-badge {
+    top: 1px;
+    right: 1px;
+    min-width: 14px;
+    height: 14px;
+    padding: 0 3px;
+    font-size: 8px !important;
   }
 
   .month-hidden-count {
