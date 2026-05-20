@@ -10,6 +10,18 @@ npm run server:dev
 ```
 
 既定URLは `http://127.0.0.1:8787` です。
+Tailscaleなど別端末から接続する場合は、バックエンドを外部待受にします。
+
+```sh
+HOST=0.0.0.0 npm run server:dev
+```
+
+フロント側は、未指定なら表示中ページと同じホストの `:8787` をAPIとして使います。
+明示したい場合は `VITE_API_BASE_URL` を指定します。
+
+```sh
+VITE_API_BASE_URL=http://<tailscale-ip-or-name>:8787 npm run dev -- --host 0.0.0.0
+```
 
 ## 確認
 

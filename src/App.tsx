@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from "react";
-import { Bell, CalendarDays, ChevronLeft, ChevronRight, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { toPng } from "html-to-image";
+import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
-import type { CalendarViewMode, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
+import type { AuthSession, CalendarViewMode, JoinRequest, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
+import { LoginView } from "./ui/Share/login/LoginView";
 import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop } from "./ui/component/CalendarViews";
 import { SideBar } from "./ui/component/SideBar";
 import { getMonthGridDays, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
@@ -11,6 +13,7 @@ const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
 const tagStorageKey = "calender-tags-v1";
+const authStorageKey = "calender-auth-v1";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
   { id: "time", label: "開始予定時間" },
   { id: "siteName", label: "現場名" },
@@ -29,6 +32,10 @@ const defaultTags: Tag[] = [
 ];
 
 export default function App() {
+  const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
+    const saved = localStorage.getItem(authStorageKey);
+    return saved ? (JSON.parse(saved) as AuthSession) : null;
+  });
   const [schedules, setSchedules] = useState<Schedule[]>(() => {
     const saved = localStorage.getItem(storageKey);
     return saved ? (JSON.parse(saved) as Schedule[]) : mockSchedules;
@@ -45,21 +52,26 @@ export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(380);
   const [settingOpen, setSettingOpen] = useState(false);
+  const [captureRendering, setCaptureRendering] = useState(false);
+  const [captureLoading, setCaptureLoading] = useState(false);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [overlapList, setOverlapList] = useState<Schedule[]>([]);
   const [anchorDate, setAnchorDate] = useState(() => new Date("2026-05-11T09:00:00"));
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
-  const [role, setRole] = useState<UserRole>("Admin");
+  const role = authSession?.user.role ?? "Guest";
   const [searchQuery, setSearchQuery] = useState("");
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
+  const [groupMembers, setGroupMembers] = useState<string[]>([]);
+  const [groupMembersError, setGroupMembersError] = useState("");
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
   const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(defaultTaskCellPriority);
   const [tagContextMenu, setTagContextMenu] = useState<{ tag: Tag; x: number; y: number } | null>(null);
   const now = useCurrentTime();
   const currentMinute = now.getHours() * 60 + now.getMinutes();
+  const captureStageRef = useRef<HTMLDivElement | null>(null);
   const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
   const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
   const selectedSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
@@ -73,6 +85,44 @@ export default function App() {
     () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(currentMember)),
     [visibleSchedules],
   );
+
+  useEffect(() => {
+    if (authSession) {
+      localStorage.setItem(authStorageKey, JSON.stringify(authSession));
+    } else {
+      localStorage.removeItem(authStorageKey);
+    }
+  }, [authSession]);
+
+  useEffect(() => {
+    if (!authSession) return;
+
+    void refreshGroupMembers(authSession.user.groupId);
+  }, [authSession?.user.groupId]);
+
+  async function refreshGroupMembers(groupId: string) {
+    setGroupMembersError("");
+    const fallbackMembers = authSession?.user.name ? [authSession.user.name] : [];
+    setGroupMembers((current) => mergeMemberNames(fallbackMembers, current));
+
+    try {
+      const payload = await getApiJson<{ users: AuthSession["user"][] }>(`/api/groups/${encodeURIComponent(groupId)}/members`);
+      setGroupMembers(mergeMemberNames(fallbackMembers, payload.users.map((user) => user.name)));
+    } catch (error) {
+      try {
+        const payload = await getApiJson<{ joinRequests: JoinRequest[] }>(`/api/join-requests?groupId=${encodeURIComponent(groupId)}`);
+        const approvedMembers = payload.joinRequests
+          .filter((request) => request.status === "approved")
+          .map((request) => request.user?.name)
+          .filter((name): name is string => Boolean(name));
+        setGroupMembers(mergeMemberNames(fallbackMembers, approvedMembers));
+        setGroupMembersError("");
+      } catch {
+        setGroupMembers((current) => mergeMemberNames(fallbackMembers, current));
+        setGroupMembersError(error instanceof Error ? error.message : "グループメンバーを取得できませんでした");
+      }
+    }
+  }
 
   useEffect(() => {
     localStorage.setItem(storageKey, JSON.stringify(schedules));
@@ -241,6 +291,40 @@ export default function App() {
     setSelectedDateKey(toDateKey(today));
   }
 
+  async function downloadCalendarImage() {
+    setCaptureLoading(true);
+    setCaptureRendering(true);
+
+    try {
+      await nextAnimationFrame();
+      await nextAnimationFrame();
+
+      if (!captureStageRef.current) return;
+
+      const dataUrl = await toPng(captureStageRef.current, {
+        width: 1920,
+        height: 1080,
+        pixelRatio: 1,
+        cacheBust: true,
+        backgroundColor: "#ffffff",
+      });
+      downloadDataUrl(dataUrl, `calendar-${viewMode}-${toDateKey(anchorDate)}.png`);
+    } finally {
+      setCaptureRendering(false);
+      setCaptureLoading(false);
+    }
+  }
+
+  function logout() {
+    setAuthSession(null);
+    setSelectedScheduleId(null);
+    setSidebarMode("detail");
+  }
+
+  if (!authSession) {
+    return <LoginView onAuthenticated={setAuthSession} />;
+  }
+
   return (
     <div className="app-shell">
       <TopBar
@@ -253,11 +337,16 @@ export default function App() {
         members={allMembers}
         tags={allTags}
         unreadCount={unreadSchedules.length}
+        userName={authSession.user.name}
+        groupId={authSession.user.groupId}
+        groupMembers={groupMembers}
+        groupMembersError={groupMembersError}
+        onGroupMembersRefresh={() => refreshGroupMembers(authSession.user.groupId)}
         onToggleSidebar={() => setSidebarOpen((value) => !value)}
         onOpenSetting={() => setSettingOpen(true)}
         onOpenNotifications={() => setNotificationOpen((value) => !value)}
         onViewModeChange={changeViewMode}
-        onRoleChange={setRole}
+        onLogout={logout}
         onSearchQueryChange={setSearchQuery}
         onMemberFiltersChange={setMemberFilters}
         onTagFiltersChange={setTagFilters}
@@ -322,6 +411,8 @@ export default function App() {
           overlapList={overlapList}
           trashSchedules={trashSchedules}
           tags={tags}
+          groupMembers={groupMembers}
+          groupMembersError={groupMembersError}
           onModeChange={setSidebarMode}
           onSelectSchedule={openSchedule}
           onSaveSchedule={saveSchedule}
@@ -338,6 +429,8 @@ export default function App() {
         open={settingOpen}
         tags={tags}
         taskCellPriority={taskCellPriority}
+        captureLoading={captureLoading}
+        onDownloadCalendarImage={downloadCalendarImage}
         onTaskCellPriorityChange={setTaskCellPriority}
         onAddTag={addTag}
         onUpdateTag={updateTag}
@@ -345,6 +438,47 @@ export default function App() {
         onOpenTagContextMenu={openTagContextMenu}
         onClose={() => setSettingOpen(false)}
       />
+      {captureRendering && (
+        <div className="calendar-capture-layer" aria-hidden="true">
+          <div className="calendar-capture-stage" ref={captureStageRef}>
+            {viewMode === "month" ? (
+              <CalendarMonthDesktop
+                anchorDate={anchorDate}
+                monthDates={monthDates}
+                schedules={visibleSchedules}
+                role={role}
+                taskCellPriority={taskCellPriority}
+                selectedDateKey={selectedDateKey}
+                onSelectDate={() => undefined}
+                onSelectSchedule={() => undefined}
+                onOpenHiddenList={() => undefined}
+              />
+            ) : viewMode === "day" ? (
+              <CalendarDayDesktop
+                date={anchorDate}
+                schedules={visibleSchedules}
+                fallbackMaxVisibleColumns={maxVisibleColumns}
+                currentMinute={currentMinute}
+                role={role}
+                taskCellPriority={taskCellPriority}
+                onSelectSchedule={() => undefined}
+                onOpenOverlapList={() => undefined}
+              />
+            ) : (
+              <CalendarWeekDesktop
+                weekDates={weekDates}
+                schedules={visibleSchedules}
+                fallbackMaxVisibleColumns={maxVisibleColumns}
+                currentMinute={currentMinute}
+                role={role}
+                taskCellPriority={taskCellPriority}
+                onSelectSchedule={() => undefined}
+                onOpenOverlapList={() => undefined}
+              />
+            )}
+          </div>
+        </div>
+      )}
       {tagContextMenu && (
         <TagContextMenu
           tag={tagContextMenu.tag}
@@ -368,11 +502,16 @@ type TopBarProps = {
   members: string[];
   tags: Tag[];
   unreadCount: number;
+  userName: string;
+  groupId: string;
+  groupMembers: string[];
+  groupMembersError: string;
+  onGroupMembersRefresh: () => void;
   onToggleSidebar: () => void;
   onOpenSetting: () => void;
   onOpenNotifications: () => void;
   onViewModeChange: (mode: CalendarViewMode) => void;
-  onRoleChange: (role: UserRole) => void;
+  onLogout: () => void;
   onSearchQueryChange: (query: string) => void;
   onMemberFiltersChange: (members: string[]) => void;
   onTagFiltersChange: (tags: string[]) => void;
@@ -392,11 +531,16 @@ function TopBar({
   members,
   tags,
   unreadCount,
+  userName,
+  groupId,
+  groupMembers,
+  groupMembersError,
+  onGroupMembersRefresh,
   onToggleSidebar,
   onOpenSetting,
   onOpenNotifications,
   onViewModeChange,
-  onRoleChange,
+  onLogout,
   onSearchQueryChange,
   onMemberFiltersChange,
   onTagFiltersChange,
@@ -407,7 +551,47 @@ function TopBar({
 }: TopBarProps) {
   const [filterOpen, setFilterOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [accountPanelOpen, setAccountPanelOpen] = useState(false);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
+  const [joinRequestLoading, setJoinRequestLoading] = useState(false);
+  const [joinRequestMessage, setJoinRequestMessage] = useState("");
   const hasFilter = memberFilters.length > 0 || tagFilters.length > 0;
+  const userInitial = getUserInitial(userName);
+  const pendingJoinRequests = joinRequests.filter((request) => request.status === "pending");
+
+  useEffect(() => {
+    if (role !== "Admin") return;
+    void refreshJoinRequests();
+  }, [role, groupId]);
+
+  async function refreshJoinRequests() {
+    setJoinRequestLoading(true);
+    setJoinRequestMessage("");
+
+    try {
+      const payload = await getApiJson<{ joinRequests: JoinRequest[] }>(`/api/join-requests?groupId=${encodeURIComponent(groupId)}`);
+      setJoinRequests(payload.joinRequests);
+    } catch (error) {
+      setJoinRequestMessage(error instanceof Error ? error.message : "承認待ちを取得できませんでした");
+    } finally {
+      setJoinRequestLoading(false);
+    }
+  }
+
+  async function approvePendingRequest(requestId: string) {
+    setJoinRequestLoading(true);
+    setJoinRequestMessage("");
+
+    try {
+      await postApiJson(`/api/join-requests/${requestId}/approve`);
+      await refreshJoinRequests();
+      onGroupMembersRefresh();
+    } catch (error) {
+      setJoinRequestMessage(error instanceof Error ? error.message : "承認に失敗しました");
+    } finally {
+      setJoinRequestLoading(false);
+    }
+  }
 
   return (
     <header className="topbar">
@@ -469,19 +653,14 @@ function TopBar({
           <Bell size={18} />
           {unreadCount > 0 && <span className="notification-dot" />}
         </button>
-        <button className="primary-button" disabled={role !== "Admin"} onClick={onCreateNew}>
-          <Plus size={16} />
-          <span className="button-label">新規作成</span>
-        </button>
+        {role === "Admin" && (
+          <button className="primary-button" onClick={onCreateNew}>
+            <Plus size={16} />
+            <span className="button-label">新規作成</span>
+          </button>
+        )}
       </div>
       <div className="topbar-group">
-        <label className="compact-select role-select">
-          <select value={role} onChange={(event) => onRoleChange(event.target.value as UserRole)}>
-            <option value="Admin">Admin</option>
-            <option value="User">User</option>
-            <option value="Guest">Guest</option>
-          </select>
-        </label>
         <button className="icon-button" aria-label={sidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"} onClick={onToggleSidebar}>
           <PanelRightOpen size={18} />
         </button>
@@ -500,7 +679,84 @@ function TopBar({
         <button className="icon-button" aria-label="次へ" onClick={onNext}>
           <ChevronRight size={18} />
         </button>
+        <button className="account-avatar-button" aria-label="アカウント" onClick={() => setAccountPanelOpen(true)}>
+          {userInitial}
+          {pendingJoinRequests.length > 0 && <span className="account-pending-badge">{pendingJoinRequests.length}</span>}
+        </button>
       </div>
+      {accountPanelOpen && (
+        <>
+          <button className="account-panel-overlay" aria-label="アカウントパネルを閉じる" onClick={() => setAccountPanelOpen(false)} />
+          <aside className="account-panel">
+            <div className="account-panel-header">
+              <div className="account-avatar-large">{userInitial}</div>
+              <div className="account-panel-user">
+                <h2>{userName}</h2>
+                <p>{role}</p>
+              </div>
+              <button className="icon-button" aria-label="アカウントパネルを閉じる" onClick={() => setAccountPanelOpen(false)}>×</button>
+            </div>
+            <div className="account-panel-section">
+              <h3>グループ</h3>
+              <div className="account-info-row">
+                <span>グループID</span>
+                <strong>{groupId}</strong>
+              </div>
+              <div className="account-member-list">
+                {groupMembers.length === 0 ? (
+                  <div className="empty-state compact">{groupMembersError ? "メンバーを取得できません" : "メンバーはいません"}</div>
+                ) : (
+                  groupMembers.map((member) => (
+                    <div className="account-member-item" key={member}>
+                      <span className="account-member-avatar">{getUserInitial(member)}</span>
+                      <span>{member}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+              {groupMembersError && <p className="account-panel-message">{groupMembersError}</p>}
+            </div>
+            {role === "Admin" && (
+              <div className="account-panel-section">
+                <div className="account-section-title-row">
+                  <h3>承認待ち</h3>
+                  <button className="text-button" disabled={joinRequestLoading} onClick={refreshJoinRequests}>更新</button>
+                </div>
+                {joinRequestMessage && <p className="account-panel-message">{joinRequestMessage}</p>}
+                {joinRequestLoading && pendingJoinRequests.length === 0 ? (
+                  <div className="empty-state compact">読み込み中</div>
+                ) : pendingJoinRequests.length === 0 ? (
+                  <div className="empty-state compact">承認待ちはありません</div>
+                ) : (
+                  <div className="pending-request-list">
+                    {pendingJoinRequests.map((request) => (
+                      <div className="pending-request-item" key={request.id}>
+                        <div className="pending-request-user">
+                          <strong>{request.user?.name ?? "名前なし"}</strong>
+                          <span>{request.user?.email ?? request.userId}</span>
+                        </div>
+                        <button className="secondary-button pending-approve-button" disabled={joinRequestLoading} onClick={() => approvePendingRequest(request.id)}>
+                          <Check size={15} />
+                          承認
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+            <button
+              className="danger-button full-width-button logout-button"
+              onClick={() => {
+                setAccountPanelOpen(false);
+                onLogout();
+              }}
+            >
+              ログアウト
+            </button>
+          </aside>
+        </>
+      )}
       {mobileMenuOpen && (
         <>
           <button className="mobile-menu-overlay" aria-label="メニューを閉じる" onClick={() => setMobileMenuOpen(false)} />
@@ -562,22 +818,90 @@ function TopBar({
                 設定
               </button>
               <button
-                className="primary-button full-width-button"
-                disabled={role !== "Admin"}
+                className="secondary-button full-width-button"
                 onClick={() => {
                   setMobileMenuOpen(false);
-                  onCreateNew();
+                  onLogout();
                 }}
               >
-                <Plus size={16} />
-                新規作成
+                ログアウト
               </button>
+              {role === "Admin" && (
+                <button
+                  className="primary-button full-width-button"
+                  onClick={() => {
+                    setMobileMenuOpen(false);
+                    onCreateNew();
+                  }}
+                >
+                  <Plus size={16} />
+                  新規作成
+                </button>
+              )}
             </div>
           </aside>
         </>
       )}
     </header>
   );
+}
+
+function getUserInitial(name: string) {
+  const trimmedName = name.trim();
+  return trimmedName.length > 0 ? trimmedName[0].toUpperCase() : "?";
+}
+
+function mergeMemberNames(...memberGroups: string[][]) {
+  return [...new Set(memberGroups.flat().map((member) => member.trim()).filter(Boolean))];
+}
+
+function nextAnimationFrame() {
+  return new Promise<void>((resolve) => {
+    requestAnimationFrame(() => resolve());
+  });
+}
+
+function downloadDataUrl(dataUrl: string, fileName: string) {
+  const link = document.createElement("a");
+  link.href = dataUrl;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
+
+async function getApiJson<T>(path: string): Promise<T> {
+  return requestApiJson<T>(path, { method: "GET" });
+}
+
+async function postApiJson<T>(path: string): Promise<T> {
+  return requestApiJson<T>(path, { method: "POST" });
+}
+
+async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
+  const apiBaseUrl = getApiBaseUrl();
+  let response: Response;
+
+  try {
+    response = await fetch(`${apiBaseUrl}${path}`, init);
+  } catch {
+    throw new Error(`APIに接続できません: ${apiBaseUrl}`);
+  }
+
+  const payload = await response.json();
+
+  if (!response.ok) {
+    throw new Error(payload.error ?? "API error");
+  }
+
+  return payload as T;
+}
+
+function getApiBaseUrl() {
+  const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
+  if (viteEnv?.VITE_API_BASE_URL) return viteEnv.VITE_API_BASE_URL;
+
+  return `http://${window.location.hostname}:8787`;
 }
 
 function NotificationPanel({ unreadSchedules, onSelectSchedule }: { unreadSchedules: Schedule[]; onSelectSchedule: (schedule: Schedule) => void }) {
@@ -634,6 +958,8 @@ function SettingDrawer({
   open,
   tags,
   taskCellPriority,
+  captureLoading,
+  onDownloadCalendarImage,
   onTaskCellPriorityChange,
   onAddTag,
   onUpdateTag,
@@ -644,6 +970,8 @@ function SettingDrawer({
   open: boolean;
   tags: Tag[];
   taskCellPriority: TaskCellPriorityItem[];
+  captureLoading: boolean;
+  onDownloadCalendarImage: () => void;
   onTaskCellPriorityChange: (priority: TaskCellPriorityItem[]) => void;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
@@ -669,6 +997,10 @@ function SettingDrawer({
           <h2>設定</h2>
           <button className="icon-button" onClick={onClose}>×</button>
         </div>
+        <button className="secondary-button full-width-button" disabled={captureLoading} onClick={onDownloadCalendarImage}>
+          <Download size={16} />
+          {captureLoading ? "画像を作成中" : "カレンダー画像を保存"}
+        </button>
         <div className="field">
           <span>TaskCell表示優先順位</span>
           <div className="priority-sort-list">

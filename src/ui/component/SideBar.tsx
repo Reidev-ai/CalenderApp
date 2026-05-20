@@ -12,6 +12,8 @@ type SideBarProps = {
   overlapList: Schedule[];
   trashSchedules: Schedule[];
   tags: Tag[];
+  groupMembers: string[];
+  groupMembersError: string;
   onModeChange: (mode: SidebarMode) => void;
   onSelectSchedule: (schedule: Schedule) => void;
   onSaveSchedule: (schedule: Schedule) => void;
@@ -32,6 +34,8 @@ export function SideBar({
   overlapList,
   trashSchedules,
   tags,
+  groupMembers,
+  groupMembersError,
   onModeChange,
   onSelectSchedule,
   onSaveSchedule,
@@ -63,6 +67,8 @@ export function SideBar({
           mode={mode}
           selectedSchedule={selectedSchedule}
           tags={tags}
+          groupMembers={groupMembers}
+          groupMembersError={groupMembersError}
           onSaveSchedule={onSaveSchedule}
           onDeleteSchedule={onDeleteSchedule}
           onDuplicateSchedule={onDuplicateSchedule}

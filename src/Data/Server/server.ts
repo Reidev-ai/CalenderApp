@@ -9,6 +9,8 @@ import {
   createTag,
   deleteTag,
   filterSchedules,
+  listGroupMembers,
+  listJoinRequests,
   loginUser,
   markScheduleRead,
   moveScheduleToTrash,
@@ -76,12 +78,16 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     return ok({ groups: data.groups });
   }
 
+  const groupMembersMatch = pathname.match(/^\/api\/groups\/([^/]+)\/members$/);
+  if (method === "GET" && groupMembersMatch) {
+    const data = await store.read();
+    return ok(listGroupMembers(data, groupMembersMatch[1]));
+  }
+
   if (method === "GET" && pathname === "/api/join-requests") {
     const data = await store.read();
     const groupId = searchParams.get("groupId");
-    const joinRequests = groupId
-      ? data.joinRequests.filter((request) => request.groupId === groupId)
-      : data.joinRequests;
+    const joinRequests = listJoinRequests(data, groupId ?? undefined);
     return ok({ joinRequests });
   }
 

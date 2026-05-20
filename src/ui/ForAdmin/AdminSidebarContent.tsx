@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Copy, Plus, Trash2 } from "lucide-react";
+import { Copy, Minus, Plus, Trash2 } from "lucide-react";
 import type { Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
 
@@ -7,6 +7,8 @@ export function AdminSidebarContent({
   mode,
   selectedSchedule,
   tags,
+  groupMembers,
+  groupMembersError,
   onSaveSchedule,
   onDeleteSchedule,
   onDuplicateSchedule,
@@ -17,6 +19,8 @@ export function AdminSidebarContent({
   mode: SidebarMode;
   selectedSchedule: Schedule | null;
   tags: Tag[];
+  groupMembers: string[];
+  groupMembersError: string;
   onSaveSchedule: (schedule: Schedule) => void;
   onDeleteSchedule: (scheduleId: string) => void;
   onDuplicateSchedule: (schedule: Schedule) => void;
@@ -32,6 +36,8 @@ export function AdminSidebarContent({
         schedule={selectedSchedule}
         role="Admin"
         tags={tags}
+        groupMembers={groupMembers}
+        groupMembersError={groupMembersError}
         onAddTag={onAddTag}
         onOpenTagContextMenu={onOpenTagContextMenu}
         onSave={onSaveSchedule}
@@ -49,6 +55,8 @@ function ScheduleEditor({
   schedule,
   role,
   tags,
+  groupMembers,
+  groupMembersError,
   onAddTag,
   onOpenTagContextMenu,
   onSave,
@@ -59,6 +67,8 @@ function ScheduleEditor({
   schedule: Schedule;
   role: UserRole;
   tags: Tag[];
+  groupMembers: string[];
+  groupMembersError: string;
   onAddTag: () => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onSave: (schedule: Schedule) => void;
@@ -67,6 +77,8 @@ function ScheduleEditor({
   onMarkAsRead: () => void;
 }) {
   const [draft, setDraft] = useState(schedule);
+  const [memberPanelOpen, setMemberPanelOpen] = useState(false);
+  const [memberInput, setMemberInput] = useState("");
   const canEdit = role === "Admin";
   const isDirty = JSON.stringify(draft) !== JSON.stringify(schedule);
 
@@ -76,6 +88,27 @@ function ScheduleEditor({
 
   function updateDraft(field: keyof Schedule, value: string | string[] | boolean) {
     setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  function addMember(member: string) {
+    const normalizedMember = member.trim();
+    if (!normalizedMember) return;
+    setDraft((current) => ({
+      ...current,
+      members: current.members.includes(normalizedMember) ? current.members : [...current.members, normalizedMember],
+    }));
+    setMemberInput("");
+  }
+
+  function removeMember(member: string) {
+    setDraft((current) => ({
+      ...current,
+      members: current.members.filter((item) => item !== member),
+    }));
+  }
+
+  function submitMemberInput() {
+    splitMembers(memberInput).forEach(addMember);
   }
 
   function toggleTag(color: string) {
@@ -103,7 +136,63 @@ function ScheduleEditor({
         <Field label="開始予定時間" value={draft.startTime} disabled={!canEdit} onChange={(value) => updateDraft("startTime", value)} />
         <Field label="終了予定時間" value={draft.endTime} disabled={!canEdit} onChange={(value) => updateDraft("endTime", value)} />
       </div>
-      <Field label="メンバー" value={draft.members.join("、")} disabled={!canEdit} onChange={(value) => updateDraft("members", splitMembers(value))} />
+      <div className="field member-field">
+        <span className="field-label-row">
+          メンバー
+          <button type="button" className="inline-add-button icon-only" disabled={!canEdit} aria-label="メンバーを追加" onClick={() => setMemberPanelOpen((value) => !value)}>
+            {memberPanelOpen ? <Minus size={14} /> : <Plus size={14} />}
+          </button>
+        </span>
+        <div className="selected-member-list">
+          {draft.members.length === 0 ? (
+            <span className="member-empty-text">未指定</span>
+          ) : (
+            draft.members.map((member) => (
+              <button type="button" className="selected-member-chip" disabled={!canEdit} key={member} onClick={() => removeMember(member)}>
+                {member}
+                <span aria-hidden="true">×</span>
+              </button>
+            ))
+          )}
+        </div>
+        {memberPanelOpen && (
+          <div className="member-picker-panel">
+            <div className="member-choice-list">
+              {groupMembers.length === 0 ? (
+                <div className="member-empty-text">{groupMembersError ? "グループメンバーを取得できません" : "グループメンバーはいません"}</div>
+              ) : (
+                groupMembers.map((member) => {
+                  const selected = draft.members.includes(member);
+
+                  return (
+                    <button type="button" className={`member-choice-button ${selected ? "selected" : ""}`} disabled={!canEdit} key={member} onClick={() => addMember(member)}>
+                      {member}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+            {groupMembersError && <p className="member-picker-message">{groupMembersError}</p>}
+            <div className="member-manual-row">
+              <input
+                value={memberInput}
+                disabled={!canEdit}
+                placeholder="名前を入力"
+                onChange={(event) => setMemberInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    submitMemberInput();
+                  }
+                }}
+              />
+              <button type="button" className="secondary-button" disabled={!canEdit || memberInput.trim() === ""} onClick={submitMemberInput}>
+                追加
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
       <Field label="元請け業者" value={draft.contractor} disabled={!canEdit} onChange={(value) => updateDraft("contractor", value)} />
       <Field label="住所" value={draft.address} disabled={!canEdit} onChange={(value) => updateDraft("address", value)} />
       <div className="field">

@@ -97,6 +97,35 @@ export function approveJoinRequest(data: Database, requestId: string) {
   return { joinRequest: request, user: publicUser(user), group };
 }
 
+export function listJoinRequests(data: Database, groupId?: string) {
+  const requests = groupId
+    ? data.joinRequests.filter((request) => request.groupId === groupId)
+    : data.joinRequests;
+
+  return requests.map((request) => {
+    const user = data.users.find((item) => item.id === request.userId);
+    const group = data.groups.find((item) => item.id === request.groupId);
+
+    return {
+      ...request,
+      user: user ? publicUser(user) : undefined,
+      group,
+    };
+  });
+}
+
+export function listGroupMembers(data: Database, groupId: string) {
+  const group = data.groups.find((item) => item.id === groupId);
+  if (!group) throw new HttpError(404, "グループが見つかりません");
+
+  const users = data.users
+    .filter((user) => !user.pending && (group.memberIds.includes(user.id) || user.groupId === groupId))
+    .map(publicUser)
+    .sort((a, b) => a.name.localeCompare(b.name, "ja"));
+
+  return { group, users };
+}
+
 export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
   const role = query.get("role") as UserRole | null;
   const member = query.get("member") ?? "";
