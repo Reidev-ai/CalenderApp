@@ -180,6 +180,7 @@ function ScheduleEditor({
         </div>
         {memberPanelOpen && (
           <div className="member-picker-panel">
+            <span className="member-picker-title">グループメンバー</span>
             <div className="member-choice-list">
               {groupMembers.length === 0 ? (
                 <div className="member-empty-text">{groupMembersError ? "グループメンバーを取得できません" : "グループメンバーはいません"}</div>
@@ -196,6 +197,7 @@ function ScheduleEditor({
               )}
             </div>
             {groupMembersError && <p className="member-picker-message">{groupMembersError}</p>}
+            <span className="member-picker-title">その他メンバー</span>
             <div className="member-manual-row">
               <input
                 value={memberInput}

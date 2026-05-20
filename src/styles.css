@@ -1136,6 +1136,14 @@ button {
   border-left: 4px solid #2563eb;
   border-radius: 6px;
   box-shadow: 0 6px 16px rgb(15 23 42 / 0.08);
+  cursor: grab;
+  touch-action: none;
+}
+
+.task-cell.dragging {
+  opacity: 0.72;
+  cursor: grabbing;
+  box-shadow: 0 14px 32px rgb(15 23 42 / 0.22);
 }
 
 .task-cell strong,
@@ -1352,6 +1360,12 @@ button {
   border: 1px solid #d7dce5;
   border-radius: 8px;
   background: #f8fafc;
+}
+
+.member-picker-title {
+  color: #303846;
+  font-size: 12px;
+  font-weight: 900;
 }
 
 .member-choice-list {

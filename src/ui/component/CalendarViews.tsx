@@ -148,9 +148,10 @@ type CalendarWeekDesktopProps = {
   titleAction?: ReactNode;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
+  onMoveSchedule: (schedule: Schedule, dateKey: string, startMinutes: number) => void;
 };
 
-export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList }: CalendarWeekDesktopProps) {
+export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList, onMoveSchedule }: CalendarWeekDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const dayColumnWidth = gridWidth > 0 ? gridWidth / weekDates.length : 0;
@@ -158,6 +159,18 @@ export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleCo
   const currentTop = (currentMinute / 1440) * 100;
   const weekStart = weekDates[0];
   const weekEnd = weekDates[weekDates.length - 1];
+
+  function resolveWeekDrop(clientX: number, clientY: number) {
+    if (!gridRef.current) return null;
+    const rect = gridRef.current.getBoundingClientRect();
+    const x = Math.min(Math.max(clientX - rect.left, 0), rect.width - 1);
+    const y = Math.min(Math.max(clientY - rect.top, 0), rect.height);
+    const dayIndex = Math.min(weekDates.length - 1, Math.max(0, Math.floor(x / (rect.width / weekDates.length))));
+    return {
+      dateKey: toDateKey(weekDates[dayIndex]),
+      startMinutes: snapMinutes((y / rect.height) * 1440),
+    };
+  }
 
   return (
     <section className="calendar-panel" aria-label="週表示カレンダー">
@@ -184,7 +197,17 @@ export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleCo
                 {laidOut
                   .filter((item) => !item.hidden)
                   .map((item) => (
-                    <TaskCell key={item.schedule.id} item={item} role={role} priority={taskCellPriority} onClick={() => onSelectSchedule(item.schedule)} />
+                    <TaskCell
+                      key={item.schedule.id}
+                      item={item}
+                      role={role}
+                      priority={taskCellPriority}
+                      onClick={() => onSelectSchedule(item.schedule)}
+                      onDropMove={(clientX, clientY) => {
+                        const drop = resolveWeekDrop(clientX, clientY);
+                        if (drop) onMoveSchedule(item.schedule, drop.dateKey, drop.startMinutes);
+                      }}
+                    />
                   ))}
                 {hiddenByGroup.map((group) => (
                   <button
@@ -215,9 +238,10 @@ type CalendarDayDesktopProps = {
   titleAction?: ReactNode;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenOverlapList: (schedules: Schedule[]) => void;
+  onMoveSchedule: (schedule: Schedule, dateKey: string, startMinutes: number) => void;
 };
 
-export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList }: CalendarDayDesktopProps) {
+export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns, currentMinute, role, taskCellPriority, titleAction, onSelectSchedule, onOpenOverlapList, onMoveSchedule }: CalendarDayDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridWidth = useElementWidth(gridRef);
   const visibleColumnCount = getVisibleStackCount(gridWidth, fallbackMaxVisibleColumns);
@@ -226,6 +250,13 @@ export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns,
   const daySchedules = schedules.flatMap((schedule) => getScheduleSegmentForDate(schedule, dateKey));
   const laidOut = layoutSchedulesForDay(daySchedules, visibleColumnCount);
   const hiddenByGroup = groupHiddenSchedules(laidOut);
+
+  function resolveDayDrop(clientY: number) {
+    if (!gridRef.current) return null;
+    const rect = gridRef.current.getBoundingClientRect();
+    const y = Math.min(Math.max(clientY - rect.top, 0), rect.height);
+    return snapMinutes((y / rect.height) * 1440);
+  }
 
   return (
     <section className="calendar-panel" aria-label="日表示カレンダー">
@@ -242,7 +273,17 @@ export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns,
             {laidOut
               .filter((item) => !item.hidden)
               .map((item) => (
-                <TaskCell key={item.schedule.id} item={item} role={role} priority={taskCellPriority} onClick={() => onSelectSchedule(item.schedule)} />
+                <TaskCell
+                  key={item.schedule.id}
+                  item={item}
+                  role={role}
+                  priority={taskCellPriority}
+                  onClick={() => onSelectSchedule(item.schedule)}
+                  onDropMove={(_clientX, clientY) => {
+                    const startMinutes = resolveDayDrop(clientY);
+                    if (startMinutes !== null) onMoveSchedule(item.schedule, dateKey, startMinutes);
+                  }}
+                />
               ))}
             {hiddenByGroup.map((group) => (
               <button
@@ -308,9 +349,22 @@ function TimeAxis({ currentMinute }: { currentMinute: number }) {
   );
 }
 
-function TaskCell({ item, role, priority, onClick }: { item: LaidOutSchedule; role: UserRole; priority: TaskCellPriorityItem[]; onClick: () => void }) {
+function TaskCell({
+  item,
+  role,
+  priority,
+  onClick,
+  onDropMove,
+}: {
+  item: LaidOutSchedule;
+  role: UserRole;
+  priority: TaskCellPriorityItem[];
+  onClick: () => void;
+  onDropMove?: (clientX: number, clientY: number) => void;
+}) {
   const cellRef = useRef<HTMLButtonElement | null>(null);
   const [cellWidth, setCellWidth] = useState(0);
+  const dragStartRef = useRef<{ x: number; y: number; moved: boolean } | null>(null);
   const width = `calc(${100 / item.columnCount}% - 6px)`;
   const left = `calc(${(100 / item.columnCount) * item.columnIndex}% + 3px)`;
   const isNarrow = cellWidth > 0 && cellWidth < 74;
@@ -344,7 +398,42 @@ function TaskCell({ item, role, priority, onClick }: { item: LaidOutSchedule; ro
         left,
         borderLeftColor: getPrimaryTagColor(item.schedule),
       }}
-      onClick={onClick}
+      onClick={(event) => {
+        if (dragStartRef.current?.moved) {
+          event.preventDefault();
+          dragStartRef.current = null;
+          return;
+        }
+        dragStartRef.current = null;
+        onClick();
+      }}
+      onPointerDown={(event) => {
+        if (!onDropMove || event.button !== 0) return;
+        dragStartRef.current = { x: event.clientX, y: event.clientY, moved: false };
+        event.currentTarget.setPointerCapture(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (!dragStartRef.current) return;
+        const distance = Math.hypot(event.clientX - dragStartRef.current.x, event.clientY - dragStartRef.current.y);
+        if (distance > 6) {
+          dragStartRef.current.moved = true;
+          event.currentTarget.classList.add("dragging");
+        }
+      }}
+      onPointerUp={(event) => {
+        if (!dragStartRef.current) return;
+        const wasMoved = dragStartRef.current.moved;
+        event.currentTarget.classList.remove("dragging");
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        if (wasMoved && onDropMove) {
+          event.preventDefault();
+          onDropMove(event.clientX, event.clientY);
+        }
+      }}
+      onPointerCancel={(event) => {
+        dragStartRef.current = null;
+        event.currentTarget.classList.remove("dragging");
+      }}
     >
       {isUnreadForCurrentUser(item.schedule, role) && <UnreadBadge />}
       {visibleItems.map((priorityItem) => renderTaskCellPriorityItem(priorityItem, item.schedule, timeSeparator))}
@@ -430,6 +519,10 @@ function isUnreadForCurrentUser(schedule: Schedule, role: UserRole) {
 function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
   if (dayColumnWidth <= 0) return fallback;
   return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
+}
+
+function snapMinutes(minutes: number) {
+  return Math.max(0, Math.min(1410, Math.round(minutes / 30) * 30));
 }
 
 function getTaskCellWidthCapacity(width: number) {

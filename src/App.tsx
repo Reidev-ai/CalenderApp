@@ -209,6 +209,63 @@ export default function App() {
     setSidebarOpen(true);
   }
 
+  function changeSidebarMode(mode: SidebarMode) {
+    if (mode === "overlapList") {
+      if (!confirmDiscardIfDirty()) return;
+      setOverlapList(getCurrentViewSchedules());
+    }
+    setSidebarMode(mode);
+  }
+
+  function getCurrentViewSchedules() {
+    if (viewMode === "month") {
+      return visibleSchedules.filter((schedule) => {
+        const endDate = schedule.endDate ?? schedule.date;
+        const monthStart = toDateKey(monthDates[0]);
+        const monthEnd = toDateKey(monthDates[monthDates.length - 1]);
+        return schedule.date <= monthEnd && endDate >= monthStart;
+      });
+    }
+
+    if (viewMode === "week") {
+      const weekStart = toDateKey(weekDates[0]);
+      const weekEnd = toDateKey(weekDates[weekDates.length - 1]);
+      return visibleSchedules.filter((schedule) => {
+        const endDate = schedule.endDate ?? schedule.date;
+        return schedule.date <= weekEnd && endDate >= weekStart;
+      });
+    }
+
+    const dayKey = toDateKey(anchorDate);
+    return visibleSchedules.filter((schedule) => {
+      const endDate = schedule.endDate ?? schedule.date;
+      return schedule.date <= dayKey && endDate >= dayKey;
+    });
+  }
+
+  function moveScheduleByDrag(schedule: Schedule, nextDate: string, nextStartMinutes: number) {
+    if (role !== "Admin") return;
+    if (!confirmDiscardIfDirty()) return;
+
+    const original = schedules.find((item) => item.id === schedule.id);
+    if (!original) return;
+
+    const durationMinutes = getScheduleDurationMinutes(original);
+    const nextStart = Math.max(0, Math.min(1439, nextStartMinutes));
+    const nextEndTotal = nextStart + durationMinutes;
+    const endDayOffset = Math.floor(nextEndTotal / 1440);
+    const endMinutes = nextEndTotal % 1440;
+    const nextSchedule = {
+      ...original,
+      date: nextDate,
+      endDate: addDaysToDateKey(nextDate, endDayOffset),
+      startTime: minutesToTime(nextStart),
+      endTime: minutesToTime(endMinutes),
+    };
+
+    void saveSchedule(nextSchedule);
+  }
+
   async function saveSchedule(schedule: Schedule) {
     const normalizedSchedule = normalizeScheduleDateRange(schedule);
     const exists = schedules.some((item) => item.id === normalizedSchedule.id);
@@ -507,6 +564,7 @@ export default function App() {
             titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
+            onMoveSchedule={moveScheduleByDrag}
           />
         ) : (
           <CalendarWeekDesktop
@@ -519,6 +577,7 @@ export default function App() {
             titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
             onOpenOverlapList={openOverlapList}
+            onMoveSchedule={moveScheduleByDrag}
           />
         )}
         <SideBar
@@ -530,7 +589,7 @@ export default function App() {
           tags={tags}
           groupMembers={groupMembers}
           groupMembersError={groupMembersError}
-          onModeChange={setSidebarMode}
+          onModeChange={changeSidebarMode}
           onSelectSchedule={openSchedule}
           onSaveSchedule={saveSchedule}
           onDeleteSchedule={deleteSchedule}
@@ -581,6 +640,7 @@ export default function App() {
                 taskCellPriority={taskCellPriority}
                 onSelectSchedule={() => undefined}
                 onOpenOverlapList={() => undefined}
+                onMoveSchedule={() => undefined}
               />
             ) : (
               <CalendarWeekDesktop
@@ -592,6 +652,7 @@ export default function App() {
                 taskCellPriority={taskCellPriority}
                 onSelectSchedule={() => undefined}
                 onOpenOverlapList={() => undefined}
+                onMoveSchedule={() => undefined}
               />
             )}
           </div>
@@ -1345,6 +1406,26 @@ function getDefaultScheduleTimeRange(date: Date) {
     startTime: minutesToTime(startMinutes),
     endTime: minutesToTime(endMinutes),
   };
+}
+
+function getScheduleDurationMinutes(schedule: Schedule) {
+  const startDate = dateKeyToDate(schedule.date);
+  const endDate = dateKeyToDate(schedule.endDate ?? schedule.date);
+  const dayDiff = Math.max(0, Math.round((endDate.getTime() - startDate.getTime()) / (24 * 60 * 60 * 1000)));
+  const startMinutes = timeStringToMinutes(schedule.startTime);
+  const endMinutes = timeStringToMinutes(schedule.endTime);
+  return Math.max(30, dayDiff * 1440 + endMinutes - startMinutes);
+}
+
+function timeStringToMinutes(time: string) {
+  const [hours, minutes] = time.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function addDaysToDateKey(dateKey: string, days: number) {
+  const date = dateKeyToDate(dateKey);
+  date.setDate(date.getDate() + days);
+  return toDateKey(date);
 }
 
 function dateKeyToDate(dateKey: string) {
