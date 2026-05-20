@@ -27,6 +27,11 @@ export type CalendarViewMode = "month" | "week" | "day";
 
 export type UserRole = "Admin" | "User" | "Guest";
 
+export type TaskCellPriorityItem = {
+  id: "time" | "siteName" | "members" | "contractor" | "address" | "memo";
+  label: string;
+};
+
 export type LaidOutSchedule = {
   schedule: Schedule;
   topPercent: number;

@@ -1,0 +1,117 @@
+import type { PointerEvent as ReactPointerEvent } from "react";
+import type { Schedule, SidebarMode, Tag, UserRole } from "../../types";
+import { AdminSidebarContent } from "../ForAdmin/AdminSidebarContent";
+import { GuestSidebarContent } from "../ForGuest/GuestSidebarContent";
+import { UserSidebarContent } from "../ForUser/UserSidebarContent";
+
+type SideBarProps = {
+  open: boolean;
+  role: UserRole;
+  mode: SidebarMode;
+  selectedSchedule: Schedule | null;
+  overlapList: Schedule[];
+  trashSchedules: Schedule[];
+  tags: Tag[];
+  onModeChange: (mode: SidebarMode) => void;
+  onSelectSchedule: (schedule: Schedule) => void;
+  onSaveSchedule: (schedule: Schedule) => void;
+  onDeleteSchedule: (scheduleId: string) => void;
+  onDuplicateSchedule: (schedule: Schedule) => void;
+  onMarkAsRead: () => void;
+  onRestoreSchedule: (schedule: Schedule) => void;
+  onAddTag: () => void;
+  onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
+  onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void;
+};
+
+export function SideBar({
+  open,
+  role,
+  mode,
+  selectedSchedule,
+  overlapList,
+  trashSchedules,
+  tags,
+  onModeChange,
+  onSelectSchedule,
+  onSaveSchedule,
+  onDeleteSchedule,
+  onDuplicateSchedule,
+  onMarkAsRead,
+  onRestoreSchedule,
+  onAddTag,
+  onOpenTagContextMenu,
+  onStartResize,
+}: SideBarProps) {
+  return (
+    <aside className={`sidebar ${open ? "open" : ""}`}>
+      <button className="sidebar-resize-handle" aria-label="サイドバー幅変更" onPointerDown={onStartResize} />
+      <div className="sidebar-header">
+        <div className="mode-tabs">
+          {role === "Admin" && <button className={mode === "edit" ? "active" : ""} onClick={() => onModeChange("edit")}>編集</button>}
+          <button className={mode === "detail" ? "active" : ""} onClick={() => onModeChange("detail")}>詳細</button>
+          <button className={mode === "overlapList" ? "active" : ""} onClick={() => onModeChange("overlapList")}>一覧</button>
+          <button className={mode === "trash" ? "active" : ""} onClick={() => onModeChange("trash")}>ゴミ箱</button>
+        </div>
+      </div>
+      {mode === "trash" ? (
+        <TrashList schedules={trashSchedules} onRestoreSchedule={onRestoreSchedule} />
+      ) : mode === "overlapList" ? (
+        <OverlapTaskList schedules={overlapList} onSelectSchedule={onSelectSchedule} />
+      ) : role === "Admin" ? (
+        <AdminSidebarContent
+          mode={mode}
+          selectedSchedule={selectedSchedule}
+          tags={tags}
+          onSaveSchedule={onSaveSchedule}
+          onDeleteSchedule={onDeleteSchedule}
+          onDuplicateSchedule={onDuplicateSchedule}
+          onMarkAsRead={onMarkAsRead}
+          onAddTag={onAddTag}
+          onOpenTagContextMenu={onOpenTagContextMenu}
+        />
+      ) : role === "User" ? (
+        <UserSidebarContent selectedSchedule={selectedSchedule} onMarkAsRead={onMarkAsRead} />
+      ) : (
+        <GuestSidebarContent selectedSchedule={selectedSchedule} onMarkAsRead={onMarkAsRead} />
+      )}
+    </aside>
+  );
+}
+
+function OverlapTaskList({ schedules, onSelectSchedule }: { schedules: Schedule[]; onSelectSchedule: (schedule: Schedule) => void }) {
+  return (
+    <div className="overlap-list">
+      <p className="list-note">表示しきれなかったタスク</p>
+      {schedules.map((schedule) => (
+        <button className="overlap-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+          <span>{schedule.startTime} ~ {schedule.endTime}</span>
+          <strong>{schedule.siteName}</strong>
+          <small>{schedule.members.join("、")}</small>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function TrashList({ schedules, onRestoreSchedule }: { schedules: Schedule[]; onRestoreSchedule: (schedule: Schedule) => void }) {
+  return (
+    <div className="overlap-list">
+      <p className="list-note">削除したタスク</p>
+      {schedules.length === 0 ? (
+        <div className="empty-state">ゴミ箱は空です</div>
+      ) : (
+        schedules.map((schedule) => (
+          <div className="trash-item" key={schedule.id}>
+            <div>
+              <span>{schedule.date} {schedule.startTime} ~ {schedule.endTime}</span>
+              <strong>{schedule.siteName}</strong>
+              <small>{schedule.members.join("、") || "メンバー未指定"}</small>
+            </div>
+            <button className="secondary-button" onClick={() => onRestoreSchedule(schedule)}>復元</button>
+          </div>
+        ))
+      )}
+    </div>
+  );
+}
