@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type RefObject } from "react";
-import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bell, CalendarDays, ChevronLeft, ChevronRight, Copy, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { CalendarViewMode, LaidOutSchedule, Schedule, SidebarMode, Tag, UserRole } from "./types";
 import { formatDateLabel, formatMonthTitle, getMonthGridDays, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
@@ -10,12 +10,26 @@ const timeMarks = [0, 360, 720, 1080, 1440];
 const fallbackMaxVisibleColumns = 3;
 const minTaskCellWidth = 28;
 const monthGridRowCount = 6;
-const monthDayVerticalPadding = 16;
-const monthDayHeadHeight = 26;
-const monthDayGap = 6;
-const monthTaskChipHeight = 26;
-const monthTaskGap = 5;
-const monthHiddenCountHeight = 24;
+const compactLayoutBreakpoint = 720;
+const compactCalendarZoom = 0.8;
+const monthLayoutMetrics = {
+  default: {
+    dayVerticalPadding: 16,
+    dayHeadHeight: 26,
+    dayGap: 6,
+    taskChipHeight: 26,
+    taskGap: 5,
+    hiddenCountHeight: 24,
+  },
+  compact: {
+    dayVerticalPadding: 6,
+    dayHeadHeight: 18 * compactCalendarZoom,
+    dayGap: 3,
+    taskChipHeight: 18 * compactCalendarZoom,
+    taskGap: 3,
+    hiddenCountHeight: 18 * compactCalendarZoom,
+  },
+};
 const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
@@ -51,6 +65,7 @@ export default function App() {
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [overlapList, setOverlapList] = useState<Schedule[]>([]);
   const [anchorDate, setAnchorDate] = useState(() => new Date("2026-05-11T09:00:00"));
+  const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const [role, setRole] = useState<UserRole>("Admin");
   const [searchQuery, setSearchQuery] = useState("");
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
@@ -137,14 +152,15 @@ export default function App() {
 
   function createNewSchedule() {
     if (role !== "Admin") return;
-    const dateKey = toDateKey(anchorDate);
+    const dateKey = selectedDateKey ?? toDateKey(new Date());
+    const { startTime, endTime } = getDefaultScheduleTimeRange(new Date());
     const schedule: Schedule = {
       id: createScheduleId(),
       siteName: "新規現場",
       content: "",
       date: dateKey,
-      startTime: "09:00",
-      endTime: "10:00",
+      startTime,
+      endTime,
       members: [],
       contractor: "",
       address: "",
@@ -270,6 +286,8 @@ export default function App() {
             anchorDate={anchorDate}
             monthDates={monthDates}
             schedules={visibleSchedules}
+            selectedDateKey={selectedDateKey}
+            onSelectDate={setSelectedDateKey}
             onSelectSchedule={openSchedule}
             onOpenHiddenList={openOverlapList}
           />
@@ -384,15 +402,21 @@ function TopBar({
   onNext,
 }: TopBarProps) {
   const [filterOpen, setFilterOpen] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const hasFilter = memberFilters.length > 0 || tagFilters.length > 0;
 
   return (
     <header className="topbar">
-      <div className="topbar-group">
-        <label className="search-box">
-          <Search size={16} />
-          <input value={searchQuery} placeholder="検索" onChange={(event) => onSearchQueryChange(event.target.value)} />
-        </label>
+      <button className="icon-button mobile-menu-button" aria-label="メニュー" onClick={() => setMobileMenuOpen(true)}>
+        <Menu size={18} />
+      </button>
+      <div className="topbar-group topbar-primary-actions">
+        <div className="search-root">
+          <div className="search-box">
+            <Search size={16} />
+            <input value={searchQuery} placeholder="検索" onChange={(event) => onSearchQueryChange(event.target.value)} />
+          </div>
+        </div>
         <div className="filter-menu-root">
           <button className={`secondary-button filter-button ${hasFilter ? "active-filter" : ""}`} onClick={() => setFilterOpen((value) => !value)}>
             <SlidersHorizontal size={16} />
@@ -464,7 +488,7 @@ function TopBar({
         </div>
         <button className="secondary-button" onClick={onToday}>
           <CalendarDays size={16} />
-          今日
+          <span className="today-button-label">今日</span>
         </button>
         <button className="icon-button" aria-label="前へ" onClick={onPrevious}>
           <ChevronLeft size={18} />
@@ -473,6 +497,81 @@ function TopBar({
           <ChevronRight size={18} />
         </button>
       </div>
+      {mobileMenuOpen && (
+        <>
+          <button className="mobile-menu-overlay" aria-label="メニューを閉じる" onClick={() => setMobileMenuOpen(false)} />
+          <aside className="mobile-action-drawer">
+            <div className="mobile-action-header">
+              <h2>操作</h2>
+              <button className="icon-button" aria-label="メニューを閉じる" onClick={() => setMobileMenuOpen(false)}>×</button>
+            </div>
+            <label className="mobile-action-search">
+              <Search size={16} />
+              <input value={searchQuery} placeholder="検索" onChange={(event) => onSearchQueryChange(event.target.value)} />
+            </label>
+            <div className="mobile-action-section">
+              <div className="mobile-action-section-title">
+                <SlidersHorizontal size={16} />
+                <span>フィルター</span>
+              </div>
+              <div className="filter-field">
+                <span>メンバー</span>
+                <div className="filter-check-list">
+                  {members.map((member) => (
+                    <label className="filter-check-item" key={member}>
+                      <input
+                        type="checkbox"
+                        checked={memberFilters.includes(member)}
+                        onChange={() => onMemberFiltersChange(toggleListValue(memberFilters, member))}
+                      />
+                      <span>{member}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <div className="filter-field">
+                <span>タグ</span>
+                <div className="filter-check-list">
+                  {tags.map((tag) => (
+                    <label className="filter-check-item" key={tag.id}>
+                      <input
+                        type="checkbox"
+                        checked={tagFilters.includes(tag.color)}
+                        onChange={() => onTagFiltersChange(toggleListValue(tagFilters, tag.color))}
+                      />
+                      <span className="tag-preview-dot" style={{ background: tag.color }} />
+                      <span>{tag.name}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div className="mobile-action-buttons">
+              <button
+                className="secondary-button full-width-button"
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onOpenSetting();
+                }}
+              >
+                <Settings size={16} />
+                設定
+              </button>
+              <button
+                className="primary-button full-width-button"
+                disabled={role !== "Admin"}
+                onClick={() => {
+                  setMobileMenuOpen(false);
+                  onCreateNew();
+                }}
+              >
+                <Plus size={16} />
+                新規作成
+              </button>
+            </div>
+          </aside>
+        </>
+      )}
     </header>
   );
 }
@@ -481,13 +580,25 @@ type CalendarMonthDesktopProps = {
   anchorDate: Date;
   monthDates: Date[];
   schedules: Schedule[];
+  selectedDateKey: string | null;
+  onSelectDate: (dateKey: string) => void;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenHiddenList: (schedules: Schedule[]) => void;
 };
 
-function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSchedule, onOpenHiddenList }: CalendarMonthDesktopProps) {
+function CalendarMonthDesktop({
+  anchorDate,
+  monthDates,
+  schedules,
+  selectedDateKey,
+  onSelectDate,
+  onSelectSchedule,
+  onOpenHiddenList,
+}: CalendarMonthDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridHeight = useElementHeight(gridRef);
+  const windowWidth = useWindowWidth();
+  const monthMetrics = windowWidth <= compactLayoutBreakpoint ? monthLayoutMetrics.compact : monthLayoutMetrics.default;
   const dayCellHeight = gridHeight > 0 ? gridHeight / monthGridRowCount : 0;
   const todayKey = toDateKey(new Date());
   const anchorMonth = anchorDate.getMonth();
@@ -508,14 +619,27 @@ function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSched
           const daySchedules = schedules
             .filter((schedule) => schedule.date === dateKey)
             .sort((a, b) => a.startTime.localeCompare(b.startTime));
-          const visibleCount = getVisibleMonthTaskCount(daySchedules.length, dayCellHeight);
+          const visibleCount = getVisibleMonthTaskCount(daySchedules.length, dayCellHeight, monthMetrics);
           const visibleSchedules = daySchedules.slice(0, visibleCount);
           const hiddenSchedules = daySchedules.slice(visibleCount);
           const isToday = dateKey === todayKey;
           const isOutsideMonth = date.getMonth() !== anchorMonth;
+          const isSelected = dateKey === selectedDateKey;
 
           return (
-            <div className={`month-day-cell ${isToday ? "today" : ""} ${isOutsideMonth ? "outside-month" : ""}`} key={dateKey}>
+            <div
+              className={`month-day-cell ${isToday ? "today" : ""} ${isOutsideMonth ? "outside-month" : ""} ${isSelected ? "selected" : ""}`}
+              key={dateKey}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelectDate(dateKey)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  onSelectDate(dateKey);
+                }
+              }}
+            >
               <div className="month-day-head">
                 <span className="month-date-pill">{date.getDate()}</span>
               </div>
@@ -525,14 +649,23 @@ function CalendarMonthDesktop({ anchorDate, monthDates, schedules, onSelectSched
                     className="month-task-chip"
                     style={{ borderLeftColor: getPrimaryTagColor(schedule) }}
                     key={schedule.id}
-                    onClick={() => onSelectSchedule(schedule)}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onSelectSchedule(schedule);
+                    }}
                   >
                     <strong>{schedule.startTime}</strong>
                     <span>{schedule.siteName}</span>
                   </button>
                 ))}
                 {hiddenSchedules.length > 0 && (
-                  <button className="month-hidden-count" onClick={() => onOpenHiddenList(hiddenSchedules)}>
+                  <button
+                    className="month-hidden-count"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onOpenHiddenList(hiddenSchedules);
+                    }}
+                  >
                     +{hiddenSchedules.length}件
                   </button>
                 )}
@@ -816,10 +949,6 @@ function SideBar({
     <aside className={`sidebar ${open ? "open" : ""}`}>
       <button className="sidebar-resize-handle" aria-label="サイドバー幅変更" onPointerDown={onStartResize} />
       <div className="sidebar-header">
-        <div>
-          <p>{role}</p>
-          <h2>{role === "Admin" ? "編集サイドバー" : role === "User" ? "自分の予定" : "共有予定"}</h2>
-        </div>
         <div className="mode-tabs">
           {role === "Admin" && <button className={mode === "edit" ? "active" : ""} onClick={() => onModeChange("edit")}>編集</button>}
           <button className={mode === "detail" ? "active" : ""} onClick={() => onModeChange("detail")}>詳細</button>
@@ -1140,16 +1269,6 @@ function SettingDrawer({
           <button className="icon-button" onClick={onClose}>×</button>
         </div>
         <label className="field">
-          <span>TaskCell最大表示列数</span>
-          <input
-            type="number"
-            min="1"
-            max="8"
-            value={maxVisibleColumns}
-            onChange={(event) => onMaxVisibleColumnsChange(Math.max(1, Number(event.target.value)))}
-          />
-        </label>
-        <label className="field">
           <span>TaskCell表示優先順位</span>
           <textarea defaultValue={"開始予定時間\n現場名\nメンバー\n元請け業者\n住所\nメモ"} rows={7} />
         </label>
@@ -1244,21 +1363,35 @@ function getTextareaRows(value: string) {
   return Math.min(12, Math.max(3, value.split("\n").length));
 }
 
+function getDefaultScheduleTimeRange(date: Date) {
+  const currentMinutes = date.getHours() * 60 + date.getMinutes();
+  const nextHourMinutes = Math.floor(currentMinutes / 60 + 1) * 60;
+  const startMinutes = nextHourMinutes >= 1440 ? 0 : nextHourMinutes;
+  const endMinutes = startMinutes + 60;
+
+  return {
+    startTime: minutesToTime(startMinutes),
+    endTime: minutesToTime(endMinutes),
+  };
+}
+
 function getVisibleStackCount(dayColumnWidth: number, fallback: number) {
   if (dayColumnWidth <= 0) return fallback;
   return Math.max(1, Math.floor(dayColumnWidth / minTaskCellWidth));
 }
 
-function getVisibleMonthTaskCount(scheduleCount: number, dayCellHeight: number) {
+type MonthLayoutMetrics = typeof monthLayoutMetrics.default;
+
+function getVisibleMonthTaskCount(scheduleCount: number, dayCellHeight: number, metrics: MonthLayoutMetrics) {
   if (scheduleCount <= 0) return 0;
   if (dayCellHeight <= 0) return Math.min(scheduleCount, 3);
 
-  const availableHeight = dayCellHeight - monthDayVerticalPadding - monthDayHeadHeight - monthDayGap;
-  const limitWithoutHiddenCount = Math.max(0, Math.floor((availableHeight + monthTaskGap) / (monthTaskChipHeight + monthTaskGap)));
+  const availableHeight = dayCellHeight - metrics.dayVerticalPadding - metrics.dayHeadHeight - metrics.dayGap;
+  const limitWithoutHiddenCount = Math.max(0, Math.floor((availableHeight + metrics.taskGap) / (metrics.taskChipHeight + metrics.taskGap)));
   if (scheduleCount <= limitWithoutHiddenCount) return scheduleCount;
 
-  const heightReservedForHiddenCount = monthHiddenCountHeight + monthTaskGap;
-  return Math.max(0, Math.floor((availableHeight - heightReservedForHiddenCount + monthTaskGap) / (monthTaskChipHeight + monthTaskGap)));
+  const heightReservedForHiddenCount = metrics.hiddenCountHeight + metrics.taskGap;
+  return Math.max(0, Math.floor((availableHeight - heightReservedForHiddenCount + metrics.taskGap) / (metrics.taskChipHeight + metrics.taskGap)));
 }
 
 function getTaskCellWidthCapacity(width: number) {
@@ -1349,4 +1482,19 @@ function useElementHeight(ref: RefObject<HTMLElement | null>) {
   }, [ref]);
 
   return height;
+}
+
+function useWindowWidth() {
+  const [width, setWidth] = useState(() => window.innerWidth);
+
+  useEffect(() => {
+    const updateWidth = () => setWidth(window.innerWidth);
+    updateWidth();
+
+    window.addEventListener("resize", updateWidth);
+
+    return () => window.removeEventListener("resize", updateWidth);
+  }, []);
+
+  return width;
 }
