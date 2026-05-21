@@ -5,7 +5,7 @@ import { layoutSchedulesForDay } from "../../utils/layoutSchedules";
 
 const weekDays = ["日", "月", "火", "水", "木", "金", "土"];
 const timeMarks = [0, 360, 720, 1080, 1440];
-const minTaskCellWidth = 28;
+const minTaskCellWidth = 44;
 const monthGridRowCount = 6;
 const compactLayoutBreakpoint = 720;
 const compactCalendarZoom = 0.8;
@@ -372,7 +372,7 @@ function TaskCell({
   const heightCapacity = getTaskCellHeightCapacity(item.heightPercent);
   const visibleDetailCount = Math.min(widthCapacity, heightCapacity);
   const visibleItems = priority.slice(0, visibleDetailCount);
-  const timeSeparator = isNarrow ? " | " : " ~ ";
+  const timeSeparator = " ~ ";
 
   useEffect(() => {
     const node = cellRef.current;

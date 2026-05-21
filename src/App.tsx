@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { toPng } from "html-to-image";
+import JSZip from "jszip";
 import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
@@ -14,6 +15,7 @@ const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
 const tagStorageKey = "calender-tags-v1";
 const authStorageKey = "calender-auth-v1";
+type CaptureTarget = "current" | "members";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
   { id: "time", label: "開始予定時間" },
   { id: "siteName", label: "現場名" },
@@ -49,11 +51,15 @@ export default function App() {
     return saved ? (JSON.parse(saved) as Tag[]) : defaultTags;
   });
   const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(mockSchedules[0]?.id ?? null);
+  const [draftNewSchedule, setDraftNewSchedule] = useState<Schedule | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(380);
   const [settingOpen, setSettingOpen] = useState(false);
+  const [capturePanelOpen, setCapturePanelOpen] = useState(false);
   const [captureRendering, setCaptureRendering] = useState(false);
   const [captureLoading, setCaptureLoading] = useState(false);
+  const [captureTarget, setCaptureTarget] = useState<CaptureTarget>("current");
+  const [captureSchedules, setCaptureSchedules] = useState<Schedule[] | null>(null);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
@@ -77,7 +83,7 @@ export default function App() {
   const captureStageRef = useRef<HTMLDivElement | null>(null);
   const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
   const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
-  const selectedSchedule = schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
+  const selectedSchedule = draftNewSchedule ?? schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
   const allMembers = useMemo(() => [...new Set(schedules.flatMap((schedule) => schedule.members))].sort(), [schedules]);
   const allTags = useMemo(() => tags, [tags]);
   const visibleSchedules = useMemo(
@@ -192,11 +198,12 @@ export default function App() {
   }, [role, sidebarMode]);
 
   function confirmDiscardIfDirty() {
-    return !dirtyEditor || confirm("保存していない変更があります。破棄しますか？");
+    return (!dirtyEditor && !draftNewSchedule) || confirm("保存していない変更があります。破棄しますか？");
   }
 
   function openSchedule(schedule: Schedule) {
     if (!confirmDiscardIfDirty()) return;
+    setDraftNewSchedule(null);
     setSelectedScheduleId(schedule.id);
     setSidebarMode(role === "Admin" ? "edit" : "detail");
     setSidebarOpen(true);
@@ -204,6 +211,7 @@ export default function App() {
 
   function openOverlapList(schedules: Schedule[]) {
     if (!confirmDiscardIfDirty()) return;
+    setDraftNewSchedule(null);
     setOverlapList(schedules);
     setSidebarMode("overlapList");
     setSidebarOpen(true);
@@ -214,6 +222,7 @@ export default function App() {
       if (!confirmDiscardIfDirty()) return;
       setOverlapList(getCurrentViewSchedules());
     }
+    if (mode !== "edit") setDraftNewSchedule(null);
     setSidebarMode(mode);
   }
 
@@ -279,6 +288,7 @@ export default function App() {
         return hasSchedule ? current.map((item) => (item.id === payload.schedule.id ? payload.schedule : item)) : [...current, payload.schedule];
       });
       setSelectedScheduleId(payload.schedule.id);
+      setDraftNewSchedule(null);
       setSidebarMode("edit");
       setDirtyEditor(false);
       setApiMessage("");
@@ -296,6 +306,7 @@ export default function App() {
       setSchedules((current) => current.filter((schedule) => schedule.id !== scheduleId));
       setTrashSchedules((current) => [payload.schedule, ...current]);
       setSelectedScheduleId(null);
+      setDraftNewSchedule(null);
       setDirtyEditor(false);
       setApiMessage("");
     } catch (error) {
@@ -348,7 +359,10 @@ export default function App() {
       readBy: [],
       isPersonal: false,
     };
-    void saveSchedule(schedule);
+    setDraftNewSchedule(schedule);
+    setSelectedScheduleId(schedule.id);
+    setSidebarMode("edit");
+    setDirtyEditor(true);
     setSidebarOpen(true);
   }
 
@@ -429,6 +443,7 @@ export default function App() {
 
   function selectDate(dateKey: string) {
     if (!confirmDiscardIfDirty()) return;
+    setDraftNewSchedule(null);
     setSelectedDateKey(dateKey);
     setAnchorDate(dateKeyToDate(dateKey));
   }
@@ -444,28 +459,77 @@ export default function App() {
     setSelectedDateKey(toDateKey(today));
   }
 
+  async function renderCalendarImage(schedulesForCapture: Schedule[]) {
+    setCaptureSchedules(schedulesForCapture);
+    setCaptureRendering(true);
+    await nextAnimationFrame();
+    await nextAnimationFrame();
+
+    if (!captureStageRef.current) throw new Error("画像出力の準備ができませんでした");
+
+    return toPng(captureStageRef.current, {
+      width: 1920,
+      height: 1080,
+      pixelRatio: 1,
+      cacheBust: true,
+      backgroundColor: "#ffffff",
+    });
+  }
+
   async function downloadCalendarImage() {
     setCaptureLoading(true);
-    setCaptureRendering(true);
 
     try {
-      await nextAnimationFrame();
-      await nextAnimationFrame();
-
-      if (!captureStageRef.current) return;
-
-      const dataUrl = await toPng(captureStageRef.current, {
-        width: 1920,
-        height: 1080,
-        pixelRatio: 1,
-        cacheBust: true,
-        backgroundColor: "#ffffff",
-      });
+      const dataUrl = await renderCalendarImage(visibleSchedules);
       downloadDataUrl(dataUrl, `calendar-${viewMode}-${toDateKey(anchorDate)}.png`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "画像を作成できませんでした");
     } finally {
       setCaptureRendering(false);
+      setCaptureSchedules(null);
       setCaptureLoading(false);
     }
+  }
+
+  async function downloadMemberCalendarImages() {
+    const exportUsers = groupUsers.filter((user) => user.role !== "Guest");
+    if (exportUsers.length === 0) {
+      setApiMessage("出力対象のメンバーがいません");
+      return;
+    }
+
+    setCaptureLoading(true);
+
+    try {
+      if (exportUsers.length === 1) {
+        const user = exportUsers[0];
+        const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
+        downloadDataUrl(dataUrl, `calendar-${safeFileName(user.name)}-${viewMode}-${toDateKey(anchorDate)}.png`);
+        return;
+      }
+
+      const zip = new JSZip();
+      for (const user of exportUsers) {
+        const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
+        zip.file(
+          `calendar-${safeFileName(user.name)}-${viewMode}-${toDateKey(anchorDate)}.png`,
+          dataUrlToBase64(dataUrl),
+          { base64: true },
+        );
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      downloadBlob(blob, `calendar-members-${viewMode}-${toDateKey(anchorDate)}.zip`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "メンバー別画像を作成できませんでした");
+    } finally {
+      setCaptureRendering(false);
+      setCaptureSchedules(null);
+      setCaptureLoading(false);
+    }
+  }
+
+  function getSchedulesForMember(memberName: string) {
+    return visibleSchedules.filter((schedule) => schedule.members.includes(memberName));
   }
 
   function logout() {
@@ -607,7 +671,7 @@ export default function App() {
         taskCellPriority={taskCellPriority}
         trashSchedules={trashSchedules}
         captureLoading={captureLoading}
-        onDownloadCalendarImage={downloadCalendarImage}
+        onOpenCapturePanel={() => setCapturePanelOpen(true)}
         onTaskCellPriorityChange={setTaskCellPriority}
         onAddTag={addTag}
         onUpdateTag={updateTag}
@@ -615,6 +679,25 @@ export default function App() {
         onOpenTagContextMenu={openTagContextMenu}
         onClose={() => setSettingOpen(false)}
       />
+      {capturePanelOpen && (
+        <CalendarCapturePanel
+          viewMode={viewMode}
+          anchorDate={anchorDate}
+          role={role}
+          target={captureTarget}
+          memberCount={groupUsers.filter((user) => user.role !== "Guest").length}
+          loading={captureLoading}
+          onTargetChange={setCaptureTarget}
+          onDownload={() => {
+            if (captureTarget === "members") {
+              void downloadMemberCalendarImages();
+              return;
+            }
+            void downloadCalendarImage();
+          }}
+          onClose={() => setCapturePanelOpen(false)}
+        />
+      )}
       {captureRendering && (
         <div className="calendar-capture-layer" aria-hidden="true">
           <div className="calendar-capture-stage" ref={captureStageRef}>
@@ -622,7 +705,7 @@ export default function App() {
               <CalendarMonthDesktop
                 anchorDate={anchorDate}
                 monthDates={monthDates}
-                schedules={visibleSchedules}
+                schedules={captureSchedules ?? visibleSchedules}
                 role={role}
                 taskCellPriority={taskCellPriority}
                 selectedDateKey={selectedDateKey}
@@ -633,7 +716,7 @@ export default function App() {
             ) : viewMode === "day" ? (
               <CalendarDayDesktop
                 date={anchorDate}
-                schedules={visibleSchedules}
+                schedules={captureSchedules ?? visibleSchedules}
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
@@ -645,7 +728,7 @@ export default function App() {
             ) : (
               <CalendarWeekDesktop
                 weekDates={weekDates}
-                schedules={visibleSchedules}
+                schedules={captureSchedules ?? visibleSchedules}
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
@@ -1072,6 +1155,25 @@ function downloadDataUrl(dataUrl: string, fileName: string) {
   link.remove();
 }
 
+function downloadBlob(blob: Blob, fileName: string) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+function dataUrlToBase64(dataUrl: string) {
+  return dataUrl.split(",")[1] ?? "";
+}
+
+function safeFileName(value: string) {
+  return value.trim().replace(/[\\/:*?"<>|]/g, "_") || "member";
+}
+
 async function getApiJson<T>(path: string): Promise<T> {
   return requestApiJson<T>(path, { method: "GET" });
 }
@@ -1217,13 +1319,112 @@ function TagContextMenu({
   );
 }
 
+function CalendarCapturePanel({
+  viewMode,
+  anchorDate,
+  role,
+  target,
+  memberCount,
+  loading,
+  onTargetChange,
+  onDownload,
+  onClose,
+}: {
+  viewMode: CalendarViewMode;
+  anchorDate: Date;
+  role: UserRole;
+  target: CaptureTarget;
+  memberCount: number;
+  loading: boolean;
+  onTargetChange: (target: CaptureTarget) => void;
+  onDownload: () => void;
+  onClose: () => void;
+}) {
+  const outputFormatLabel = target === "members" && memberCount > 1 ? "ZIP" : "PNG";
+
+  return (
+    <>
+      <button className="capture-panel-overlay" aria-label="画像出力を閉じる" onClick={onClose} />
+      <aside className="capture-panel">
+        <div className="drawer-header">
+          <h2>画像出力</h2>
+          <button className="icon-button" onClick={onClose}>×</button>
+        </div>
+        <div className="capture-preview-box">
+          <div className="capture-preview-ratio">
+            <CalendarDays size={34} />
+            <strong>1920 × 1080</strong>
+            <span>{getViewModeLabel(viewMode)} / {toDateKey(anchorDate)}</span>
+          </div>
+        </div>
+        <div className="capture-option-grid">
+          <label className="field">
+            <span>出力サイズ</span>
+            <select value="fhd" disabled>
+              <option value="fhd">FHD 1920×1080</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>形式</span>
+            <select value={outputFormatLabel.toLowerCase()} disabled>
+              <option value="png">PNG</option>
+              <option value="zip">ZIP</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>出力対象</span>
+            <select value={target} onChange={(event) => onTargetChange(event.target.value as CaptureTarget)}>
+              <option value="current">現在の表示</option>
+              {role === "Admin" && <option value="members">各メンバーごと</option>}
+            </select>
+          </label>
+          <label className="field">
+            <span>対象表示</span>
+            <select value={viewMode} disabled>
+              <option value="month">月表示</option>
+              <option value="week">週表示</option>
+              <option value="day">日表示</option>
+            </select>
+          </label>
+          <label className="field">
+            <span>背景</span>
+            <select value="white" disabled>
+              <option value="white">白背景</option>
+            </select>
+          </label>
+        </div>
+        {target === "members" && (
+          <p className="capture-panel-note">
+            {memberCount > 1
+              ? `${memberCount}人分のPNGをZIPにまとめて保存します。`
+              : `${memberCount}人分のPNGを保存します。`}
+          </p>
+        )}
+        <div className="capture-panel-actions">
+          <button className="secondary-button" onClick={onClose}>閉じる</button>
+          <button className="primary-button" disabled={loading} onClick={onDownload}>
+            <Download size={16} />
+            {loading ? "画像を作成中" : `${outputFormatLabel}を保存`}
+          </button>
+        </div>
+      </aside>
+    </>
+  );
+}
+
+function getViewModeLabel(viewMode: CalendarViewMode) {
+  if (viewMode === "month") return "月表示";
+  if (viewMode === "week") return "週表示";
+  return "日表示";
+}
+
 function SettingDrawer({
   open,
   tags,
   taskCellPriority,
   trashSchedules,
   captureLoading,
-  onDownloadCalendarImage,
+  onOpenCapturePanel,
   onTaskCellPriorityChange,
   onAddTag,
   onUpdateTag,
@@ -1236,7 +1437,7 @@ function SettingDrawer({
   taskCellPriority: TaskCellPriorityItem[];
   trashSchedules: Schedule[];
   captureLoading: boolean;
-  onDownloadCalendarImage: () => void;
+  onOpenCapturePanel: () => void;
   onTaskCellPriorityChange: (priority: TaskCellPriorityItem[]) => void;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
@@ -1262,9 +1463,9 @@ function SettingDrawer({
           <h2>設定</h2>
           <button className="icon-button" onClick={onClose}>×</button>
         </div>
-        <button className="secondary-button full-width-button" disabled={captureLoading} onClick={onDownloadCalendarImage}>
+        <button className="secondary-button full-width-button" disabled={captureLoading} onClick={onOpenCapturePanel}>
           <Download size={16} />
-          {captureLoading ? "画像を作成中" : "カレンダー画像を保存"}
+          画像出力を開く
         </button>
         <div className="field">
           <span>TaskCell表示優先順位</span>
@@ -1441,11 +1642,29 @@ function getScheduleTagColors(schedule: Schedule) {
 }
 
 function normalizeScheduleDateRange(schedule: Schedule): Schedule {
-  const endDate = schedule.endDate ?? schedule.date;
-  return {
+  const normalized = {
     ...schedule,
-    endDate: endDate < schedule.date ? schedule.date : endDate,
+    endDate: schedule.endDate ?? schedule.date,
+    startTime: normalizeTimeString(schedule.startTime),
+    endTime: normalizeTimeString(schedule.endTime),
   };
+
+  if (normalized.endDate < normalized.date) {
+    return { ...normalized, endDate: normalized.date, endTime: normalized.startTime };
+  }
+
+  if (normalized.endDate === normalized.date && timeStringToMinutes(normalized.endTime) < timeStringToMinutes(normalized.startTime)) {
+    return { ...normalized, endTime: normalized.startTime };
+  }
+
+  return normalized;
+}
+
+function normalizeTimeString(time: string) {
+  const [rawHour, rawMinute] = time.split(":").map(Number);
+  const hour = Math.min(23, Math.max(0, Number.isFinite(rawHour) ? rawHour : 0));
+  const minute = Math.min(59, Math.max(0, Number.isFinite(rawMinute) ? rawMinute : 0));
+  return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
 }
 
 function formatScheduleDateRange(schedule: Schedule) {

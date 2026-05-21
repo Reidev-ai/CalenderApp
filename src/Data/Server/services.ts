@@ -278,14 +278,14 @@ function createUser(email: string, password: string, name: string, role: UserRol
 }
 
 function normalizeSchedule(input: SchedulePatch): Schedule {
-  return {
+  const schedule = {
     id: input.id ?? randomUUID(),
     siteName: input.siteName ?? "新規現場",
     content: input.content ?? "",
     date: input.date ?? new Date().toISOString().slice(0, 10),
     endDate: input.endDate ?? input.date ?? new Date().toISOString().slice(0, 10),
-    startTime: input.startTime ?? "09:00",
-    endTime: input.endTime ?? "10:00",
+    startTime: normalizeTimeString(input.startTime ?? "09:00"),
+    endTime: normalizeTimeString(input.endTime ?? "10:00"),
     members: input.members ?? [],
     contractor: input.contractor ?? "",
     address: input.address ?? "",
@@ -295,6 +295,29 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     readBy: input.readBy ?? [],
     isPersonal: input.isPersonal ?? false,
   };
+
+  if (schedule.endDate < schedule.date) {
+    schedule.endDate = schedule.date;
+    schedule.endTime = schedule.startTime;
+  }
+
+  if (schedule.endDate === schedule.date && timeStringToMinutes(schedule.endTime) < timeStringToMinutes(schedule.startTime)) {
+    schedule.endTime = schedule.startTime;
+  }
+
+  return schedule;
+}
+
+function normalizeTimeString(time: string) {
+  const [rawHour, rawMinute] = time.split(":").map(Number);
+  const hour = Math.min(23, Math.max(0, Number.isFinite(rawHour) ? rawHour : 0));
+  const minute = Math.min(59, Math.max(0, Number.isFinite(rawMinute) ? rawMinute : 0));
+  return `${hour.toString().padStart(2, "0")}:${minute.toString().padStart(2, "0")}`;
+}
+
+function timeStringToMinutes(time: string) {
+  const [rawHour, rawMinute] = normalizeTimeString(time).split(":").map(Number);
+  return rawHour * 60 + rawMinute;
 }
 
 function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {
