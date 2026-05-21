@@ -5,6 +5,7 @@ import { ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
 
 export function AdminSidebarContent({
   mode,
+  role = "Admin",
   selectedSchedule,
   tags,
   groupMembers,
@@ -18,6 +19,7 @@ export function AdminSidebarContent({
   onDirtyChange,
 }: {
   mode: SidebarMode;
+  role?: UserRole;
   selectedSchedule: Schedule | null;
   tags: Tag[];
   groupMembers: string[];
@@ -36,7 +38,7 @@ export function AdminSidebarContent({
     return (
       <ScheduleEditor
         schedule={selectedSchedule}
-        role="Admin"
+        role={role}
         tags={tags}
         groupMembers={groupMembers}
         groupMembersError={groupMembersError}
@@ -94,7 +96,7 @@ function ScheduleEditor({
   const [draft, setDraft] = useState(schedule);
   const [memberPanelOpen, setMemberPanelOpen] = useState(false);
   const [memberInput, setMemberInput] = useState("");
-  const canEdit = role === "Admin";
+  const canEdit = role === "Admin" || (role === "User" && draft.isPersonal);
   const isDirty = JSON.stringify(draft) !== JSON.stringify(schedule);
 
   useEffect(() => {

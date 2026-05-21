@@ -81,6 +81,15 @@ export function loginUser(data: Database, body: LoginBody) {
   return { token: session.token, user: publicUser(user) };
 }
 
+export function getSessionUser(data: Database, token: string | null | undefined) {
+  if (!token) throw new HttpError(401, "認証が必要です");
+  const session = data.sessions.find((item) => item.token === token);
+  if (!session) throw new HttpError(401, "セッションが無効です");
+  const user = data.users.find((item) => item.id === session.userId);
+  if (!user || user.pending) throw new HttpError(401, "ユーザーが見つかりません");
+  return user;
+}
+
 export function approveJoinRequest(data: Database, requestId: string) {
   const request = data.joinRequests.find((item) => item.id === requestId);
   if (!request) throw new HttpError(404, "参加申請が見つかりません");
@@ -141,6 +150,9 @@ export function updateGroupMember(data: Database, groupId: string, userId: strin
 
   if (patch.role !== undefined) {
     if (patch.role === "Guest") throw new HttpError(400, "Guestには変更できません");
+    if (user.role === "Admin" && patch.role !== "Admin" && group.adminIds.length <= 1) {
+      throw new HttpError(409, "最後のAdminは降格できません");
+    }
     user.role = patch.role;
     group.adminIds = patch.role === "Admin"
       ? [...new Set([...group.adminIds, user.id])]
@@ -199,23 +211,49 @@ export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
   });
 }
 
-export function createSchedule(data: Database, body: SchedulePatch) {
-  const schedule = normalizeSchedule(body);
+export function filterSchedulesForUser(schedules: Schedule[], actor: ServerUser, query: URLSearchParams) {
+  const scopedSchedules = schedules.filter((schedule) => {
+    if (schedule.groupId && schedule.groupId !== actor.groupId) return false;
+    if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
+    if (actor.role === "Admin") return true;
+    return schedule.members.includes(actor.name);
+  });
+
+  return filterSchedules(scopedSchedules, query);
+}
+
+export function createSchedule(data: Database, body: SchedulePatch, actor?: ServerUser) {
+  if (actor && actor.role === "Guest") throw new HttpError(403, "権限がありません");
+  const isPersonal = actor?.role === "User" ? true : body.isPersonal;
+  const schedule = normalizeSchedule({
+    ...body,
+    groupId: actor?.groupId ?? body.groupId,
+    ownerUserId: isPersonal ? actor?.id ?? body.ownerUserId : body.ownerUserId,
+    isPersonal,
+  });
   data.schedules.push(schedule);
   return schedule;
 }
 
-export function updateSchedule(data: Database, scheduleId: string, patch: SchedulePatch) {
+export function updateSchedule(data: Database, scheduleId: string, patch: SchedulePatch, actor?: ServerUser) {
   const index = data.schedules.findIndex((schedule) => schedule.id === scheduleId);
   if (index === -1) throw new HttpError(404, "スケジュールが見つかりません");
+  if (actor) assertCanWriteSchedule(data.schedules[index], actor);
 
-  data.schedules[index] = normalizeSchedule({ ...data.schedules[index], ...patch, id: scheduleId });
+  data.schedules[index] = normalizeSchedule({
+    ...data.schedules[index],
+    ...patch,
+    id: scheduleId,
+    groupId: data.schedules[index].groupId ?? actor?.groupId ?? patch.groupId,
+    ownerUserId: data.schedules[index].ownerUserId ?? patch.ownerUserId,
+  });
   return data.schedules[index];
 }
 
-export function moveScheduleToTrash(data: Database, scheduleId: string) {
+export function moveScheduleToTrash(data: Database, scheduleId: string, actor?: ServerUser) {
   const index = data.schedules.findIndex((schedule) => schedule.id === scheduleId);
   if (index === -1) throw new HttpError(404, "スケジュールが見つかりません");
+  if (actor) assertCanWriteSchedule(data.schedules[index], actor);
 
   const [schedule] = data.schedules.splice(index, 1);
   data.trashSchedules.unshift(schedule);
@@ -231,10 +269,19 @@ export function restoreSchedule(data: Database, scheduleId: string) {
   return schedule;
 }
 
-export function markScheduleRead(data: Database, scheduleId: string, member: string) {
+export function markScheduleRead(data: Database, scheduleId: string, member: string, actor?: ServerUser) {
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
+  if (actor && schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
   if (!schedule.readBy.includes(member)) schedule.readBy.push(member);
+  return schedule;
+}
+
+export function markScheduleChangeRead(data: Database, scheduleId: string, userId: string, actor?: ServerUser) {
+  const schedule = data.schedules.find((item) => item.id === scheduleId);
+  if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
+  if (actor && schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  schedule.changeReadBy = [...new Set([...(schedule.changeReadBy ?? []), userId])];
   return schedule;
 }
 
@@ -278,8 +325,11 @@ function createUser(email: string, password: string, name: string, role: UserRol
 }
 
 function normalizeSchedule(input: SchedulePatch): Schedule {
+  const now = new Date().toISOString();
   const schedule = {
     id: input.id ?? randomUUID(),
+    groupId: input.groupId,
+    ownerUserId: input.ownerUserId,
     siteName: input.siteName ?? "新規現場",
     content: input.content ?? "",
     date: input.date ?? new Date().toISOString().slice(0, 10),
@@ -293,7 +343,10 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     tagColor: input.tagColor ?? input.tagColors?.[0] ?? "#3b82f6",
     tagColors: input.tagColors ?? [input.tagColor ?? "#3b82f6"],
     readBy: input.readBy ?? [],
+    changeReadBy: input.changeReadBy ?? [],
     isPersonal: input.isPersonal ?? false,
+    createdAt: input.createdAt ?? now,
+    updatedAt: now,
   };
 
   if (schedule.endDate < schedule.date) {
@@ -306,6 +359,13 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
   }
 
   return schedule;
+}
+
+function assertCanWriteSchedule(schedule: Schedule, actor: ServerUser) {
+  if (schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (actor.role === "Admin" && !schedule.isPersonal) return;
+  if (actor.role === "User" && schedule.isPersonal && schedule.ownerUserId === actor.id) return;
+  throw new HttpError(403, "権限がありません");
 }
 
 function normalizeTimeString(time: string) {

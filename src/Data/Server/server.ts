@@ -9,10 +9,13 @@ import {
   createTag,
   deleteTag,
   filterSchedules,
+  filterSchedulesForUser,
+  getSessionUser,
   listGroupMembers,
   listJoinRequests,
   loginUser,
   markScheduleRead,
+  markScheduleChangeRead,
   moveScheduleToTrash,
   registerUser,
   removeGroupMember,
@@ -75,19 +78,23 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     return ok(response);
   }
 
+  const actor = await authenticate(req);
+
   if (method === "GET" && pathname === "/api/groups") {
     const data = await store.read();
-    return ok({ groups: data.groups });
+    return ok({ groups: data.groups.filter((group) => group.id === actor.groupId) });
   }
 
   const groupMembersMatch = pathname.match(/^\/api\/groups\/([^/]+)\/members$/);
   if (method === "GET" && groupMembersMatch) {
+    if (groupMembersMatch[1] !== actor.groupId) throw new HttpError(403, "権限がありません");
     const data = await store.read();
     return ok(listGroupMembers(data, groupMembersMatch[1]));
   }
 
   const groupMemberMatch = pathname.match(/^\/api\/groups\/([^/]+)\/members\/([^/]+)$/);
   if (method === "PATCH" && groupMemberMatch) {
+    if (actor.role !== "Admin" || groupMemberMatch[1] !== actor.groupId) throw new HttpError(403, "権限がありません");
     const body = await parseJsonBody<MemberPatch>(req);
     let response: unknown;
     await store.update((data) => {
@@ -97,6 +104,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "DELETE" && groupMemberMatch) {
+    if (actor.role !== "Admin" || groupMemberMatch[1] !== actor.groupId) throw new HttpError(403, "権限がありません");
     let response: unknown;
     await store.update((data) => {
       response = removeGroupMember(data, groupMemberMatch[1], groupMemberMatch[2]);
@@ -105,6 +113,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "GET" && pathname === "/api/join-requests") {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     const data = await store.read();
     const groupId = searchParams.get("groupId");
     const joinRequests = listJoinRequests(data, groupId ?? undefined);
@@ -113,6 +122,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   const approveMatch = pathname.match(/^\/api\/join-requests\/([^/]+)\/approve$/);
   if (method === "POST" && approveMatch) {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let response: unknown;
     await store.update((data) => {
       response = approveJoinRequest(data, approveMatch[1]);
@@ -122,14 +132,14 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   if (method === "GET" && pathname === "/api/schedules") {
     const data = await store.read();
-    return ok({ schedules: filterSchedules(data.schedules, searchParams) });
+    return ok({ schedules: filterSchedulesForUser(data.schedules, actor, searchParams) });
   }
 
   if (method === "POST" && pathname === "/api/schedules") {
     const body = await parseJsonBody<SchedulePatch>(req);
     let schedule: unknown;
     await store.update((data) => {
-      schedule = createSchedule(data, body);
+      schedule = createSchedule(data, body, actor);
     });
     return created({ schedule });
   }
@@ -139,7 +149,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     const body = await parseJsonBody<SchedulePatch>(req);
     let schedule: unknown;
     await store.update((data) => {
-      schedule = updateSchedule(data, scheduleMatch[1], body);
+      schedule = updateSchedule(data, scheduleMatch[1], body, actor);
     });
     return ok({ schedule });
   }
@@ -147,7 +157,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   if (scheduleMatch && method === "DELETE") {
     let schedule: unknown;
     await store.update((data) => {
-      schedule = moveScheduleToTrash(data, scheduleMatch[1]);
+      schedule = moveScheduleToTrash(data, scheduleMatch[1], actor);
     });
     return ok({ schedule });
   }
@@ -159,18 +169,29 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     const member = body.member;
     let schedule: unknown;
     await store.update((data) => {
-      schedule = markScheduleRead(data, readMatch[1], member);
+      schedule = markScheduleRead(data, readMatch[1], member, actor);
+    });
+    return ok({ schedule });
+  }
+
+  const changeReadMatch = pathname.match(/^\/api\/schedules\/([^/]+)\/change-read$/);
+  if (changeReadMatch && method === "POST") {
+    let schedule: unknown;
+    await store.update((data) => {
+      schedule = markScheduleChangeRead(data, changeReadMatch[1], actor.id, actor);
     });
     return ok({ schedule });
   }
 
   if (method === "GET" && pathname === "/api/trash") {
+    if (actor.role !== "Admin") return ok({ schedules: [] });
     const data = await store.read();
-    return ok({ schedules: data.trashSchedules });
+    return ok({ schedules: data.trashSchedules.filter((schedule) => !schedule.groupId || schedule.groupId === actor.groupId) });
   }
 
   const restoreMatch = pathname.match(/^\/api\/trash\/([^/]+)\/restore$/);
   if (restoreMatch && method === "POST") {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let schedule: unknown;
     await store.update((data) => {
       schedule = restoreSchedule(data, restoreMatch[1]);
@@ -184,6 +205,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "POST" && pathname === "/api/tags") {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     const body = await parseJsonBody<Record<string, string>>(req);
     let tag: unknown;
     await store.update((data) => {
@@ -194,6 +216,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   const tagMatch = pathname.match(/^\/api\/tags\/([^/]+)$/);
   if (tagMatch && method === "PATCH") {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     const body = await parseJsonBody<Record<string, string>>(req);
     let tag: unknown;
     await store.update((data) => {
@@ -203,6 +226,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (tagMatch && method === "DELETE") {
+    if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let tag: unknown;
     await store.update((data) => {
       tag = deleteTag(data, tagMatch[1]);
@@ -211,6 +235,14 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   return notFound(pathname);
+}
+
+async function authenticate(req: IncomingMessage) {
+  const rawAuthHeader = req.headers.authorization ?? "";
+  const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] ?? "" : rawAuthHeader;
+  const token = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+  const data = await store.read();
+  return getSessionUser(data, token);
 }
 
 function ok(body: unknown) {

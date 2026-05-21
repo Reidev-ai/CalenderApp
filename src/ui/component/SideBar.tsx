@@ -50,16 +50,17 @@ export function SideBar({
       <button className="sidebar-resize-handle" aria-label="サイドバー幅変更" onPointerDown={onStartResize} />
       <div className="sidebar-header">
         <div className="mode-tabs">
-          {role === "Admin" && <button className={mode === "edit" ? "active" : ""} onClick={() => onModeChange("edit")}>編集</button>}
+          {(role === "Admin" || (role === "User" && selectedSchedule?.isPersonal)) && <button className={mode === "edit" ? "active" : ""} onClick={() => onModeChange("edit")}>編集</button>}
           <button className={mode === "detail" ? "active" : ""} onClick={() => onModeChange("detail")}>詳細</button>
           <button className={mode === "overlapList" ? "active" : ""} onClick={() => onModeChange("overlapList")}>一覧</button>
         </div>
       </div>
       {mode === "overlapList" ? (
         <OverlapTaskList schedules={overlapList} onSelectSchedule={onSelectSchedule} />
-      ) : role === "Admin" ? (
+      ) : role === "Admin" || (role === "User" && selectedSchedule?.isPersonal && mode === "edit") ? (
         <AdminSidebarContent
           mode={mode}
+          role={role}
           selectedSchedule={selectedSchedule}
           tags={tags}
           groupMembers={groupMembers}

@@ -40,6 +40,7 @@ type CalendarMonthDesktopProps = {
   onSelectDate: (dateKey: string) => void;
   onSelectSchedule: (schedule: Schedule) => void;
   onOpenHiddenList: (schedules: Schedule[]) => void;
+  onMoveScheduleDate?: (schedule: Schedule, dateKey: string) => void;
 };
 
 export function CalendarMonthDesktop({
@@ -53,6 +54,7 @@ export function CalendarMonthDesktop({
   onSelectDate,
   onSelectSchedule,
   onOpenHiddenList,
+  onMoveScheduleDate,
 }: CalendarMonthDesktopProps) {
   const gridRef = useRef<HTMLDivElement | null>(null);
   const gridHeight = useElementHeight(gridRef);
@@ -93,6 +95,16 @@ export function CalendarMonthDesktop({
               role="button"
               tabIndex={0}
               onClick={() => onSelectDate(dateKey)}
+              onDragOver={(event) => {
+                if (onMoveScheduleDate) event.preventDefault();
+              }}
+              onDrop={(event) => {
+                if (!onMoveScheduleDate) return;
+                event.preventDefault();
+                const scheduleId = event.dataTransfer.getData("text/plain");
+                const schedule = schedules.find((item) => item.id === scheduleId);
+                if (schedule) onMoveScheduleDate(schedule, dateKey);
+              }}
               onKeyDown={(event) => {
                 if (event.key === "Enter" || event.key === " ") {
                   event.preventDefault();
@@ -106,15 +118,22 @@ export function CalendarMonthDesktop({
               <div className="month-task-list">
                 {visibleSchedules.map((schedule) => (
                   <button
-                    className={`month-task-chip ${isUnreadForCurrentUser(schedule, role) ? "unread-task" : ""}`}
+                    className={`month-task-chip ${isUnreadForCurrentUser(schedule, role) ? "unread-task" : ""} ${schedule.isPersonal ? "personal-task" : ""}`}
                     style={{ borderLeftColor: getPrimaryTagColor(schedule) }}
                     key={schedule.id}
+                    draggable={Boolean(onMoveScheduleDate)}
+                    onDragStart={(event) => {
+                      event.stopPropagation();
+                      event.dataTransfer.setData("text/plain", schedule.id);
+                      event.dataTransfer.effectAllowed = "move";
+                    }}
                     onClick={(event) => {
                       event.stopPropagation();
                       onSelectSchedule(schedule);
                     }}
                   >
                     {isUnreadForCurrentUser(schedule, role) && <UnreadBadge />}
+                    {schedule.isPersonal && <PersonalBadge />}
                     {taskCellPriority.slice(0, 2).map((priorityItem) => renderTaskCellPriorityItem(priorityItem, schedule, " ~ "))}
                   </button>
                 ))}
@@ -390,7 +409,7 @@ function TaskCell({
   return (
     <button
       ref={cellRef}
-      className={`task-cell ${isNarrow ? "narrow" : ""} ${isUnreadForCurrentUser(item.schedule, role) ? "unread-task" : ""}`}
+      className={`task-cell ${isNarrow ? "narrow" : ""} ${isUnreadForCurrentUser(item.schedule, role) ? "unread-task" : ""} ${item.schedule.isPersonal ? "personal-task" : ""}`}
       style={{
         top: `${item.topPercent}%`,
         height: `${item.heightPercent}%`,
@@ -436,6 +455,7 @@ function TaskCell({
       }}
     >
       {isUnreadForCurrentUser(item.schedule, role) && <UnreadBadge />}
+      {item.schedule.isPersonal && <PersonalBadge />}
       {visibleItems.map((priorityItem) => renderTaskCellPriorityItem(priorityItem, item.schedule, timeSeparator))}
     </button>
   );
@@ -443,6 +463,10 @@ function TaskCell({
 
 function UnreadBadge() {
   return <span className="unread-badge">未</span>;
+}
+
+function PersonalBadge() {
+  return <span className="personal-badge">個人</span>;
 }
 
 function renderTaskCellPriorityItem(item: TaskCellPriorityItem, schedule: Schedule, timeSeparator: string) {

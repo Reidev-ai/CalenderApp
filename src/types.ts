@@ -1,5 +1,7 @@
 export type Schedule = {
   id: string;
+  groupId?: string;
+  ownerUserId?: string;
   siteName: string;
   content: string;
   date: string;
@@ -13,7 +15,10 @@ export type Schedule = {
   tagColor: string;
   tagColors?: string[];
   readBy: string[];
+  changeReadBy?: string[];
   isPersonal?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 };
 
 export type Tag = {

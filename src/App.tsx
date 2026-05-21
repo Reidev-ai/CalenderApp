@@ -7,15 +7,17 @@ import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, Schedule, Si
 import { LoginView } from "./ui/Share/login/LoginView";
 import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop } from "./ui/component/CalendarViews";
 import { SideBar } from "./ui/component/SideBar";
-import { getMonthGridDays, getWeekDays, minutesToTime, toDateKey } from "./utils/time";
+import { getMonthGridDays, getWeekDays, minutesToTime, timeToMinutes, toDateKey } from "./utils/time";
 
 const fallbackMaxVisibleColumns = 3;
 const currentMember = "佐藤";
 const storageKey = "calender-schedules-v1";
 const trashStorageKey = "calender-trash-v1";
 const tagStorageKey = "calender-tags-v1";
+const offlineStorageKey = "calender-offline-cache-v1";
 const authStorageKey = "calender-auth-v1";
 type CaptureTarget = "current" | "members";
+type SearchSort = "dateAsc" | "dateDesc" | "updatedDesc" | "siteName";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
   { id: "time", label: "開始予定時間" },
   { id: "siteName", label: "現場名" },
@@ -60,6 +62,7 @@ export default function App() {
   const [captureLoading, setCaptureLoading] = useState(false);
   const [captureTarget, setCaptureTarget] = useState<CaptureTarget>("current");
   const [captureSchedules, setCaptureSchedules] = useState<Schedule[] | null>(null);
+  const [selectedCaptureUserIds, setSelectedCaptureUserIds] = useState<string[]>([]);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
@@ -68,11 +71,13 @@ export default function App() {
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const role = authSession?.user.role ?? "Guest";
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchSort, setSearchSort] = useState<SearchSort>("dateAsc");
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
   const [groupUsers, setGroupUsers] = useState<AuthUser[]>([]);
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupMembersError, setGroupMembersError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
+  const [offlineMode, setOfflineMode] = useState(false);
   const [dirtyEditor, setDirtyEditor] = useState(false);
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
@@ -91,8 +96,16 @@ export default function App() {
     [schedules, role, searchQuery, memberFilters, tagFilters],
   );
   const unreadSchedules = useMemo(
-    () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(currentMember)),
-    [visibleSchedules],
+    () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(authSession?.user.name ?? currentMember)),
+    [authSession?.user.name, visibleSchedules],
+  );
+  const unreadChangeSchedules = useMemo(
+    () => visibleSchedules.filter((schedule) => !(schedule.changeReadBy ?? []).includes(authSession?.user.id ?? "")),
+    [authSession?.user.id, visibleSchedules],
+  );
+  const confirmedChangeSchedules = useMemo(
+    () => visibleSchedules.filter((schedule) => (schedule.changeReadBy ?? []).includes(authSession?.user.id ?? "")),
+    [authSession?.user.id, visibleSchedules],
   );
   const searchActive = searchQuery.trim() !== "" || memberFilters.length > 0 || tagFilters.length > 0;
 
@@ -111,6 +124,15 @@ export default function App() {
     void refreshServerData();
   }, [authSession?.user.groupId]);
 
+  useEffect(() => {
+    const selectableUsers = groupUsers.filter((user) => user.role !== "Guest");
+    setSelectedCaptureUserIds((current) => {
+      const validIds = new Set(selectableUsers.map((user) => user.id));
+      const kept = current.filter((id) => validIds.has(id));
+      return kept.length > 0 ? kept : selectableUsers.map((user) => user.id);
+    });
+  }, [groupUsers]);
+
   async function refreshServerData() {
     setApiMessage("");
 
@@ -120,11 +142,26 @@ export default function App() {
         getApiJson<{ schedules: Schedule[] }>("/api/trash"),
         getApiJson<{ tags: Tag[] }>("/api/tags"),
       ]);
-      setSchedules(schedulePayload.schedules);
-      setTrashSchedules(trashPayload.schedules);
+      const cache = loadOfflineCache();
+      const nextSchedules = cache ? mergeLatestSchedules(schedulePayload.schedules, cache.schedules) : schedulePayload.schedules;
+      const nextTrashSchedules = cache ? mergeLatestSchedules(trashPayload.schedules, cache.trashSchedules) : trashPayload.schedules;
+      setSchedules(nextSchedules);
+      setTrashSchedules(nextTrashSchedules);
       setTags(tagPayload.tags);
-      setSelectedScheduleId((current) => current ?? schedulePayload.schedules[0]?.id ?? null);
+      setSelectedScheduleId((current) => current ?? nextSchedules[0]?.id ?? null);
+      setOfflineMode(false);
+      saveOfflineCache(nextSchedules, nextTrashSchedules, tagPayload.tags);
     } catch (error) {
+      const cache = loadOfflineCache();
+      if (cache) {
+        setSchedules(cache.schedules);
+        setTrashSchedules(cache.trashSchedules);
+        setTags(cache.tags);
+        setOfflineMode(true);
+        setApiMessage("オフライン表示中です。APIに接続できないためローカルキャッシュを使っています。");
+        return;
+      }
+      setOfflineMode(true);
       setApiMessage(error instanceof Error ? error.message : "APIからデータを取得できませんでした");
     }
   }
@@ -167,8 +204,14 @@ export default function App() {
     }
   }
 
-  async function removeGroupMember(userId: string) {
-    if (!authSession || !confirm("このメンバーをグループから削除しますか？")) return;
+  async function removeGroupMember(userId: string, memberName: string) {
+    if (!authSession) return;
+    if (!confirm(`${memberName} を完全に削除します。この操作は取り消せません。続けますか？`)) return;
+    const typedName = prompt(`削除するには「${memberName}」と入力してください`);
+    if (typedName !== memberName) {
+      setApiMessage("入力が一致しなかったため削除を中止しました");
+      return;
+    }
 
     try {
       await deleteApiJson<{ user: AuthUser }>(`/api/groups/${encodeURIComponent(authSession.user.groupId)}/members/${encodeURIComponent(userId)}`);
@@ -192,10 +235,10 @@ export default function App() {
   }, [tags]);
 
   useEffect(() => {
-    if (role !== "Admin" && sidebarMode === "edit") {
+    if (role !== "Admin" && !(role === "User" && selectedSchedule?.isPersonal) && sidebarMode === "edit") {
       setSidebarMode("detail");
     }
-  }, [role, sidebarMode]);
+  }, [role, selectedSchedule?.isPersonal, sidebarMode]);
 
   function confirmDiscardIfDirty() {
     return (!dirtyEditor && !draftNewSchedule) || confirm("保存していない変更があります。破棄しますか？");
@@ -205,7 +248,7 @@ export default function App() {
     if (!confirmDiscardIfDirty()) return;
     setDraftNewSchedule(null);
     setSelectedScheduleId(schedule.id);
-    setSidebarMode(role === "Admin" ? "edit" : "detail");
+    setSidebarMode(role === "Admin" || (role === "User" && schedule.isPersonal) ? "edit" : "detail");
     setSidebarOpen(true);
   }
 
@@ -253,7 +296,7 @@ export default function App() {
   }
 
   function moveScheduleByDrag(schedule: Schedule, nextDate: string, nextStartMinutes: number) {
-    if (role !== "Admin") return;
+    if (role !== "Admin" && !(role === "User" && schedule.isPersonal && schedule.ownerUserId === authSession?.user.id)) return;
     if (!confirmDiscardIfDirty()) return;
 
     const original = schedules.find((item) => item.id === schedule.id);
@@ -276,7 +319,12 @@ export default function App() {
   }
 
   async function saveSchedule(schedule: Schedule) {
-    const normalizedSchedule = normalizeScheduleDateRange(schedule);
+    const normalizedSchedule = normalizeScheduleDateRange({
+      ...schedule,
+      groupId: schedule.groupId ?? authSession?.user.groupId,
+      ownerUserId: schedule.ownerUserId ?? (schedule.isPersonal ? authSession?.user.id : undefined),
+      isPersonal: role === "User" ? true : schedule.isPersonal,
+    });
     const exists = schedules.some((item) => item.id === normalizedSchedule.id);
 
     try {
@@ -338,26 +386,29 @@ export default function App() {
   }
 
   function createNewSchedule() {
-    if (role !== "Admin") return;
+    if (role !== "Admin" && role !== "User") return;
     if (!confirmDiscardIfDirty()) return;
     const dateKey = selectedDateKey ?? toDateKey(new Date());
     const { startTime, endTime } = getDefaultScheduleTimeRange(new Date());
+    const isPersonal = role === "User";
     const schedule: Schedule = {
       id: createScheduleId(),
-      siteName: "新規現場",
+      groupId: authSession?.user.groupId,
+      ownerUserId: isPersonal ? authSession?.user.id : undefined,
+      siteName: isPersonal ? "個人タスク" : "新規現場",
       content: "",
       date: dateKey,
       endDate: dateKey,
       startTime,
       endTime,
-      members: [],
+      members: isPersonal && authSession?.user.name ? [authSession.user.name] : [],
       contractor: "",
       address: "",
       memo: "",
       tagColor: "#3b82f6",
       tagColors: ["#3b82f6"],
       readBy: [],
-      isPersonal: false,
+      isPersonal,
     };
     setDraftNewSchedule(schedule);
     setSelectedScheduleId(schedule.id);
@@ -369,11 +420,21 @@ export default function App() {
   async function markSelectedAsRead() {
     if (!selectedSchedule) return;
     try {
-      const payload = await postApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(selectedSchedule.id)}/read`, { member: currentMember });
+      const payload = await postApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(selectedSchedule.id)}/read`, { member: authSession?.user.name ?? currentMember });
       setSchedules((current) => current.map((schedule) => (schedule.id === payload.schedule.id ? payload.schedule : schedule)));
       setApiMessage("");
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "既読にできませんでした");
+    }
+  }
+
+  async function markScheduleChangeAsRead(schedule: Schedule) {
+    try {
+      const payload = await postApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(schedule.id)}/change-read`);
+      setSchedules((current) => current.map((item) => (item.id === payload.schedule.id ? payload.schedule : item)));
+      setApiMessage("");
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "変更通知を確認済みにできませんでした");
     }
   }
 
@@ -481,7 +542,7 @@ export default function App() {
 
     try {
       const dataUrl = await renderCalendarImage(visibleSchedules);
-      downloadDataUrl(dataUrl, `calendar-${viewMode}-${toDateKey(anchorDate)}.png`);
+      downloadDataUrl(dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}.png`);
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "画像を作成できませんでした");
     } finally {
@@ -492,7 +553,8 @@ export default function App() {
   }
 
   async function downloadMemberCalendarImages() {
-    const exportUsers = groupUsers.filter((user) => user.role !== "Guest");
+    const selectedIds = new Set(selectedCaptureUserIds);
+    const exportUsers = groupUsers.filter((user) => user.role !== "Guest" && selectedIds.has(user.id));
     if (exportUsers.length === 0) {
       setApiMessage("出力対象のメンバーがいません");
       return;
@@ -504,7 +566,7 @@ export default function App() {
       if (exportUsers.length === 1) {
         const user = exportUsers[0];
         const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
-        downloadDataUrl(dataUrl, `calendar-${safeFileName(user.name)}-${viewMode}-${toDateKey(anchorDate)}.png`);
+        downloadDataUrl(dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`);
         return;
       }
 
@@ -512,13 +574,13 @@ export default function App() {
       for (const user of exportUsers) {
         const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
         zip.file(
-          `calendar-${safeFileName(user.name)}-${viewMode}-${toDateKey(anchorDate)}.png`,
+          `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`,
           dataUrlToBase64(dataUrl),
           { base64: true },
         );
       }
       const blob = await zip.generateAsync({ type: "blob" });
-      downloadBlob(blob, `calendar-members-${viewMode}-${toDateKey(anchorDate)}.zip`);
+      downloadBlob(blob, `${getCalendarExportBaseName(viewMode, anchorDate)}.zip`);
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "メンバー別画像を作成できませんでした");
     } finally {
@@ -558,7 +620,7 @@ export default function App() {
         tagFilters={tagFilters}
         members={allMembers}
         tags={allTags}
-        unreadCount={unreadSchedules.length}
+        unreadCount={unreadChangeSchedules.length}
         userName={authSession.user.name}
         groupId={authSession.user.groupId}
         groupMembers={groupMembers}
@@ -583,10 +645,12 @@ export default function App() {
         className={`workspace ${sidebarOpen ? "sidebar-visible" : "sidebar-hidden"}`}
         style={{ gridTemplateColumns: sidebarOpen ? `minmax(0, 1fr) ${sidebarWidth}px` : "minmax(0, 1fr) 0px" }}
       >
-        {apiMessage && <div className="api-message-banner">{apiMessage}</div>}
+        {(apiMessage || offlineMode) && <div className="api-message-banner">{offlineMode ? "オフライン表示中" : apiMessage}</div>}
         {searchActive && (
           <SearchResultPanel
             schedules={visibleSchedules}
+            sort={searchSort}
+            onSortChange={setSearchSort}
             onSelectSchedule={openSchedule}
             onClear={() => {
               setSearchQuery("");
@@ -597,10 +661,14 @@ export default function App() {
         )}
         {notificationOpen && (
           <NotificationPanel
-            unreadSchedules={unreadSchedules}
+            unreadSchedules={unreadChangeSchedules}
+            confirmedSchedules={confirmedChangeSchedules}
             onSelectSchedule={(schedule) => {
               openSchedule(schedule);
               setNotificationOpen(false);
+            }}
+            onMarkAsRead={(schedule) => {
+              void markScheduleChangeAsRead(schedule);
             }}
           />
         )}
@@ -616,6 +684,7 @@ export default function App() {
             onSelectDate={selectDate}
             onSelectSchedule={openSchedule}
             onOpenHiddenList={openOverlapList}
+            onMoveScheduleDate={(schedule, dateKey) => moveScheduleByDrag(schedule, dateKey, timeToMinutes(schedule.startTime))}
           />
         ) : viewMode === "day" ? (
           <CalendarDayDesktop
@@ -686,8 +755,11 @@ export default function App() {
           role={role}
           target={captureTarget}
           memberCount={groupUsers.filter((user) => user.role !== "Guest").length}
+          members={groupUsers.filter((user) => user.role !== "Guest")}
+          selectedMemberIds={selectedCaptureUserIds}
           loading={captureLoading}
           onTargetChange={setCaptureTarget}
+          onSelectedMembersChange={setSelectedCaptureUserIds}
           onDownload={() => {
             if (captureTarget === "members") {
               void downloadMemberCalendarImages();
@@ -712,6 +784,7 @@ export default function App() {
                 onSelectDate={() => undefined}
                 onSelectSchedule={() => undefined}
                 onOpenHiddenList={() => undefined}
+                onMoveScheduleDate={() => undefined}
               />
             ) : viewMode === "day" ? (
               <CalendarDayDesktop
@@ -769,7 +842,7 @@ type TopBarProps = {
   groupUsers: AuthUser[];
   groupMembersError: string;
   onUpdateGroupMember: (userId: string, patch: Partial<Pick<AuthUser, "name" | "role">>) => void;
-  onRemoveGroupMember: (userId: string) => void;
+  onRemoveGroupMember: (userId: string, memberName: string) => void;
   onGroupMembersRefresh: () => void;
   onOpenSetting: () => void;
   onOpenNotifications: () => void;
@@ -918,7 +991,7 @@ function TopBar({
           <Bell size={18} />
           {unreadCount > 0 && <span className="notification-dot" />}
         </button>
-        {role === "Admin" && (
+        {(role === "Admin" || role === "User") && (
           <button className="primary-button" onClick={onCreateNew}>
             <Plus size={16} />
             <span className="button-label">新規作成</span>
@@ -991,7 +1064,7 @@ function TopBar({
                           <option value="Admin">Admin</option>
                           <option value="User">User</option>
                         </select>
-                        <button className="icon-button" aria-label={`${member.name}を削除`} onClick={() => onRemoveGroupMember(member.id)}>
+                        <button className="icon-button" aria-label={`${member.name}を削除`} onClick={() => onRemoveGroupMember(member.id, member.name)}>
                           <Trash2 size={15} />
                         </button>
                       </div>
@@ -1111,7 +1184,7 @@ function TopBar({
                 <Settings size={16} />
                 設定
               </button>
-              {role === "Admin" && (
+              {(role === "Admin" || role === "User") && (
                 <button
                   className="primary-button full-width-button"
                   onClick={() => {
@@ -1208,10 +1281,13 @@ async function deleteApiJson<T>(path: string): Promise<T> {
 
 async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
   const apiBaseUrl = getApiBaseUrl();
+  const authToken = getStoredAuthToken();
+  const headers = new Headers(init.headers);
+  if (authToken) headers.set("Authorization", `Bearer ${authToken}`);
   let response: Response;
 
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, init);
+    response = await fetch(`${apiBaseUrl}${path}`, { ...init, headers });
   } catch {
     throw new Error(`APIに接続できません: ${apiBaseUrl}`);
   }
@@ -1225,6 +1301,17 @@ async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
   return payload as T;
 }
 
+function getStoredAuthToken() {
+  const saved = localStorage.getItem(authStorageKey);
+  if (!saved) return "";
+
+  try {
+    return (JSON.parse(saved) as AuthSession).token ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function getApiBaseUrl() {
   const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
   if (viteEnv?.VITE_API_BASE_URL) return viteEnv.VITE_API_BASE_URL;
@@ -1232,21 +1319,114 @@ function getApiBaseUrl() {
   return `http://${window.location.hostname}:8787`;
 }
 
-function NotificationPanel({ unreadSchedules, onSelectSchedule }: { unreadSchedules: Schedule[]; onSelectSchedule: (schedule: Schedule) => void }) {
+function saveOfflineCache(schedules: Schedule[], trashSchedules: Schedule[], tags: Tag[]) {
+  const today = new Date();
+  const minDate = new Date(today);
+  minDate.setFullYear(minDate.getFullYear() - 1);
+  const maxDate = new Date(today);
+  maxDate.setFullYear(maxDate.getFullYear() + 2);
+  const minKey = toDateKey(minDate);
+  const maxKey = toDateKey(maxDate);
+  const inRange = (schedule: Schedule) => schedule.date <= maxKey && (schedule.endDate ?? schedule.date) >= minKey;
+  localStorage.setItem(offlineStorageKey, JSON.stringify({
+    savedAt: new Date().toISOString(),
+    schedules: schedules.filter(inRange),
+    trashSchedules: trashSchedules.filter(inRange),
+    tags,
+  }));
+}
+
+function loadOfflineCache(): { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] } | null {
+  const saved = localStorage.getItem(offlineStorageKey);
+  if (!saved) return null;
+
+  try {
+    return JSON.parse(saved) as { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] };
+  } catch {
+    return null;
+  }
+}
+
+function mergeLatestSchedules(serverSchedules: Schedule[], cachedSchedules: Schedule[]) {
+  const merged = new Map<string, Schedule>();
+  serverSchedules.forEach((schedule) => merged.set(schedule.id, schedule));
+  cachedSchedules.forEach((schedule) => {
+    const current = merged.get(schedule.id);
+    if (!current || getScheduleSavedAt(schedule) > getScheduleSavedAt(current)) {
+      merged.set(schedule.id, schedule);
+    }
+  });
+
+  return [...merged.values()].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`));
+}
+
+function getScheduleSavedAt(schedule: Schedule) {
+  return Date.parse(schedule.updatedAt ?? schedule.createdAt ?? "1970-01-01T00:00:00.000Z");
+}
+
+function getCalendarExportBaseName(viewMode: CalendarViewMode, anchorDate: Date) {
+  if (viewMode === "month") {
+    return `${anchorDate.getFullYear()}-${String(anchorDate.getMonth() + 1).padStart(2, "0")}`;
+  }
+
+  if (viewMode === "week") {
+    const week = getWeekDays(anchorDate);
+    const start = week[0];
+    const end = week[week.length - 1];
+    return `${start.getMonth() + 1}月${start.getDate()}日-${end.getMonth() + 1}月${end.getDate()}日`;
+  }
+
+  return toDateKey(anchorDate);
+}
+
+function NotificationPanel({
+  unreadSchedules,
+  confirmedSchedules,
+  onSelectSchedule,
+  onMarkAsRead,
+}: {
+  unreadSchedules: Schedule[];
+  confirmedSchedules: Schedule[];
+  onSelectSchedule: (schedule: Schedule) => void;
+  onMarkAsRead: (schedule: Schedule) => void;
+}) {
+  const [confirmedOpen, setConfirmedOpen] = useState(false);
+
   return (
     <aside className="notification-panel">
       <h2>通知</h2>
-      <p>{unreadSchedules.length}件の未確認タスクがあります</p>
+      <p>{unreadSchedules.length}件の未確認変更があります</p>
       {unreadSchedules.length === 0 ? (
         <div className="empty-state">通知はありません</div>
       ) : (
         unreadSchedules.map((schedule) => (
-          <button className="overlap-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
-            <span>{schedule.date} {schedule.startTime}</span>
-            <strong>{schedule.siteName}</strong>
-            <small>{schedule.members.join("、")}</small>
-          </button>
+          <div className="notification-item" key={schedule.id}>
+            <button className="overlap-item" onClick={() => onSelectSchedule(schedule)}>
+              <span>{schedule.date} {schedule.startTime}</span>
+              <strong>{schedule.siteName}</strong>
+              <small>{schedule.members.join("、") || "メンバー未指定"}</small>
+            </button>
+            <button className="text-button" onClick={() => onMarkAsRead(schedule)}>確認済み</button>
+          </div>
         ))
+      )}
+      <button className="text-button notification-confirmed-toggle" onClick={() => setConfirmedOpen((value) => !value)}>
+        確認済みリスト {confirmedOpen ? "閉じる" : "開く"} ({confirmedSchedules.length})
+      </button>
+      {confirmedOpen && (
+        <div className="notification-confirmed-list">
+          {confirmedSchedules.length === 0 ? (
+            <div className="empty-state compact">確認済みはありません</div>
+          ) : (
+            confirmedSchedules.map((schedule) => (
+              <button className="overlap-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+                <span>{schedule.date} {schedule.startTime}</span>
+                <strong>{schedule.siteName}</strong>
+                <small>{schedule.members.join("、") || "メンバー未指定"}</small>
+              </button>
+            ))
+          )}
+        </div>
       )}
     </aside>
   );
@@ -1254,14 +1434,23 @@ function NotificationPanel({ unreadSchedules, onSelectSchedule }: { unreadSchedu
 
 function SearchResultPanel({
   schedules,
+  sort,
+  onSortChange,
   onSelectSchedule,
   onClear,
 }: {
   schedules: Schedule[];
+  sort: SearchSort;
+  onSortChange: (sort: SearchSort) => void;
   onSelectSchedule: (schedule: Schedule) => void;
   onClear: () => void;
 }) {
-  const sortedSchedules = [...schedules].sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`));
+  const sortedSchedules = [...schedules].sort((a, b) => {
+    if (sort === "dateDesc") return `${b.date} ${b.startTime}`.localeCompare(`${a.date} ${a.startTime}`);
+    if (sort === "updatedDesc") return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+    if (sort === "siteName") return a.siteName.localeCompare(b.siteName, "ja");
+    return `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`);
+  });
 
   return (
     <aside className="search-result-panel">
@@ -1270,13 +1459,19 @@ function SearchResultPanel({
           <strong>検索結果</strong>
           <span>{sortedSchedules.length}件</span>
         </div>
+        <select className="search-sort-select" value={sort} onChange={(event) => onSortChange(event.target.value as SearchSort)}>
+          <option value="dateAsc">日時が早い順</option>
+          <option value="dateDesc">日時が遅い順</option>
+          <option value="updatedDesc">更新が新しい順</option>
+          <option value="siteName">現場名順</option>
+        </select>
         <button className="text-button" onClick={onClear}>クリア</button>
       </div>
       {sortedSchedules.length === 0 ? (
         <div className="empty-state compact">該当するタスクはありません</div>
       ) : (
         <div className="search-result-list">
-          {sortedSchedules.slice(0, 20).map((schedule) => (
+          {sortedSchedules.map((schedule) => (
             <button className="search-result-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
               <span>{formatScheduleDateRange(schedule)} {schedule.startTime} ~ {schedule.endTime}</span>
               <strong>{schedule.siteName}</strong>
@@ -1325,8 +1520,11 @@ function CalendarCapturePanel({
   role,
   target,
   memberCount,
+  members,
+  selectedMemberIds,
   loading,
   onTargetChange,
+  onSelectedMembersChange,
   onDownload,
   onClose,
 }: {
@@ -1335,12 +1533,16 @@ function CalendarCapturePanel({
   role: UserRole;
   target: CaptureTarget;
   memberCount: number;
+  members: AuthUser[];
+  selectedMemberIds: string[];
   loading: boolean;
   onTargetChange: (target: CaptureTarget) => void;
+  onSelectedMembersChange: (memberIds: string[]) => void;
   onDownload: () => void;
   onClose: () => void;
 }) {
-  const outputFormatLabel = target === "members" && memberCount > 1 ? "ZIP" : "PNG";
+  const selectedCount = target === "members" ? selectedMemberIds.length : memberCount;
+  const outputFormatLabel = target === "members" && selectedCount > 1 ? "ZIP" : "PNG";
 
   return (
     <>
@@ -1394,15 +1596,33 @@ function CalendarCapturePanel({
           </label>
         </div>
         {target === "members" && (
-          <p className="capture-panel-note">
-            {memberCount > 1
-              ? `${memberCount}人分のPNGをZIPにまとめて保存します。`
-              : `${memberCount}人分のPNGを保存します。`}
-          </p>
+          <div className="capture-member-select">
+            <div className="capture-member-select-head">
+              <strong>メンバー別出力</strong>
+              <button type="button" className="text-button" onClick={() => onSelectedMembersChange(members.map((member) => member.id))}>全員</button>
+            </div>
+            <div className="capture-member-list">
+              {members.map((member) => (
+                <label className="filter-check-item" key={member.id}>
+                  <input
+                    type="checkbox"
+                    checked={selectedMemberIds.includes(member.id)}
+                    onChange={() => onSelectedMembersChange(toggleListValue(selectedMemberIds, member.id))}
+                  />
+                  <span>{member.name}</span>
+                </label>
+              ))}
+            </div>
+            <p className="capture-panel-note">
+              {selectedCount > 1
+                ? `${selectedCount}人分のPNGをZIPにまとめて保存します。`
+                : `${selectedCount}人分のPNGを保存します。`}
+            </p>
+          </div>
         )}
         <div className="capture-panel-actions">
           <button className="secondary-button" onClick={onClose}>閉じる</button>
-          <button className="primary-button" disabled={loading} onClick={onDownload}>
+          <button className="primary-button" disabled={loading || (target === "members" && selectedCount === 0)} onClick={onDownload}>
             <Download size={16} />
             {loading ? "画像を作成中" : `${outputFormatLabel}を保存`}
           </button>
