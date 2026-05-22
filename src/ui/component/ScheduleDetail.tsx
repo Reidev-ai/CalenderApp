@@ -5,16 +5,18 @@ import type { MemoImage, Schedule, UserRole } from "../../types";
 export function ScheduleDetail({
   schedule,
   role,
+  currentUserId,
   currentUserName,
   onMarkAsRead,
 }: {
   schedule: Schedule;
   role: UserRole;
+  currentUserId: string;
   currentUserName: string;
   onMarkAsRead: () => void;
 }) {
   const [previewImage, setPreviewImage] = useState<MemoImage | null>(null);
-  const isReadByCurrentUser = Boolean(currentUserName && schedule.readBy.includes(currentUserName));
+  const isReadByCurrentUser = Boolean((schedule.readByUserIds ?? []).includes(currentUserId) || (currentUserName && schedule.readBy.includes(currentUserName)));
 
   return (
     <div className="detail-body">

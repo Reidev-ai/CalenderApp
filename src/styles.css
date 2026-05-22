@@ -1643,6 +1643,25 @@ button {
   white-space: nowrap;
 }
 
+.memo-image-name-input {
+  width: 100%;
+  min-width: 0;
+  height: 32px;
+  border: 0;
+  border-top: 1px solid #eef0f3;
+  background: #ffffff;
+  color: #303846;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 700;
+  outline: 0;
+}
+
+.memo-image-name-input:focus {
+  border-top-color: #93c5fd;
+  background: #eff6ff;
+}
+
 .memo-image-item > button:not(.memo-image-preview-button) {
   position: absolute;
   top: 6px;
@@ -1991,20 +2010,10 @@ button {
   background: #eff6ff;
 }
 
-.tag-choice input {
+.tag-choice input[type="checkbox"] {
   width: 14px;
   height: 14px;
   margin: 0;
-}
-
-.tag-choice > span:nth-of-type(2) {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: #303846;
-  font-size: 13px;
-  font-weight: 700;
 }
 
 .tag-inline-color-input {
@@ -2016,7 +2025,6 @@ button {
 }
 
 .tag-inline-name-input {
-  grid-column: 1 / -1;
   width: 100%;
   min-width: 0;
   height: 30px;

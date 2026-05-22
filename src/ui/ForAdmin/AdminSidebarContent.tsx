@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
 import { Check, Copy, ImagePlus, Minus, Plus, Trash2, X } from "lucide-react";
-import type { MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
+import type { AuthUser, MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { MemoImageElement, MemoImagePreviewOverlay, ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
 
 export function AdminSidebarContent({
   mode,
   role = "Admin",
   selectedSchedule,
+  currentUserId,
   currentUserName,
   tags,
   addressCandidates,
   groupMembers,
+  groupUsers,
+  memberDisplayNames,
   groupMembersError,
   onSaveSchedule,
   onUploadMemoImage,
@@ -25,10 +28,13 @@ export function AdminSidebarContent({
   mode: SidebarMode;
   role?: UserRole;
   selectedSchedule: Schedule | null;
+  currentUserId: string;
   currentUserName: string;
   tags: Tag[];
   addressCandidates: string[];
   groupMembers: string[];
+  groupUsers: AuthUser[];
+  memberDisplayNames: Record<string, string>;
   groupMembersError: string;
   onSaveSchedule: (schedule: Schedule) => Promise<void>;
   onUploadMemoImage: (file: File, onProgress: (progress: number) => void) => Promise<MemoImage>;
@@ -46,11 +52,14 @@ export function AdminSidebarContent({
     return (
       <ScheduleEditor
         schedule={selectedSchedule}
+        currentUserId={currentUserId}
         currentUserName={currentUserName}
         role={role}
         tags={tags}
         addressCandidates={addressCandidates}
         groupMembers={groupMembers}
+        groupUsers={groupUsers}
+        memberDisplayNames={memberDisplayNames}
         groupMembersError={groupMembersError}
         onAddTag={onAddTag}
         onUpdateTag={onUpdateTag}
@@ -67,7 +76,7 @@ export function AdminSidebarContent({
 
   if (!selectedSchedule) return <div className="empty-state">タスクを選択してください</div>;
 
-  return <ScheduleDetail schedule={selectedSchedule} role="Admin" currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />;
+  return <ScheduleDetail schedule={selectedSchedule} role="Admin" currentUserId={currentUserId} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />;
 }
 
 function EmptyEditorState({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
@@ -88,11 +97,14 @@ type MemoImageUploadItem = {
 
 function ScheduleEditor({
   schedule,
+  currentUserId,
   currentUserName,
   role,
   tags,
   addressCandidates,
   groupMembers,
+  groupUsers,
+  memberDisplayNames,
   groupMembersError,
   onAddTag,
   onUpdateTag,
@@ -105,11 +117,14 @@ function ScheduleEditor({
   onMarkAsRead,
 }: {
   schedule: Schedule;
+  currentUserId: string;
   currentUserName: string;
   role: UserRole;
   tags: Tag[];
   addressCandidates: string[];
   groupMembers: string[];
+  groupUsers: AuthUser[];
+  memberDisplayNames: Record<string, string>;
   groupMembersError: string;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
@@ -130,9 +145,11 @@ function ScheduleEditor({
   const [memoImageUploads, setMemoImageUploads] = useState<MemoImageUploadItem[]>([]);
   const [completedMemoImageIds, setCompletedMemoImageIds] = useState<string[]>([]);
   const canEdit = role === "Admin" || (role === "User" && draft.isPersonal);
-  const isReadByCurrentUser = Boolean(currentUserName && draft.readBy.includes(currentUserName));
+  const isReadByCurrentUser = Boolean((draft.readByUserIds ?? []).includes(currentUserId) || (currentUserName && draft.readBy.includes(currentUserName)));
   const isDirty = JSON.stringify(draft) !== JSON.stringify(schedule);
-  const additionalMembers = uniqueMembers([...customMemberCandidates, ...draft.members]).filter((member) => !groupMembers.includes(member));
+  const selectedMemberIds = draft.memberIds ?? [];
+  const groupUserNameSet = new Set(groupUsers.map((user) => user.name));
+  const additionalMembers = uniqueMembers([...customMemberCandidates, ...draft.members]).filter((member) => !groupMembers.includes(member) && !groupUserNameSet.has(member));
 
   useEffect(() => {
     setDraft(schedule);
@@ -194,6 +211,15 @@ function ScheduleEditor({
     }));
   }
 
+  function renameMemoImage(imageId: string, name: string) {
+    setDraft((current) => ({
+      ...current,
+      memoImages: (current.memoImages ?? []).map((image) => (
+        image.id === imageId ? { ...image, name } : image
+      )),
+    }));
+  }
+
   async function handleSave() {
     if (!canEdit || saving) return;
     setSaving(true);
@@ -219,6 +245,26 @@ function ScheduleEditor({
       members: current.members.includes(normalizedMember) ? current.members : [...current.members, normalizedMember],
     }));
     setMemberInput("");
+  }
+
+  function addGroupMember(user: AuthUser) {
+    setDraft((current) => ({
+      ...current,
+      memberIds: current.memberIds?.includes(user.id) ? current.memberIds : [...(current.memberIds ?? []), user.id],
+      members: current.members.includes(user.name) ? current.members : [...current.members, user.name],
+    }));
+  }
+
+  function removeGroupMember(user: AuthUser) {
+    setDraft((current) => ({
+      ...current,
+      memberIds: (current.memberIds ?? []).filter((id) => id !== user.id),
+      members: current.members.filter((member) => member !== user.name),
+    }));
+  }
+
+  function getMemberDisplayName(user: AuthUser) {
+    return memberDisplayNames[user.id]?.trim() || user.name;
   }
 
   function removeMember(member: string) {
@@ -268,30 +314,43 @@ function ScheduleEditor({
           </button>
         </span>
         <div className="selected-member-list">
-          {draft.members.length === 0 ? (
+          {selectedMemberIds.length === 0 && draft.members.length === 0 ? (
             <span className="member-empty-text">未指定</span>
           ) : (
-            draft.members.map((member) => (
-              <button type="button" className="selected-member-chip" disabled={!canEdit} key={member} onClick={() => removeMember(member)}>
-                {member}
-                <span aria-hidden="true">×</span>
-              </button>
-            ))
+            <>
+              {groupUsers
+                .filter((user) => selectedMemberIds.includes(user.id) || draft.members.includes(user.name))
+                .map((user) => (
+                  <button type="button" className="selected-member-chip" disabled={!canEdit} key={user.id} onClick={() => removeGroupMember(user)}>
+                    {getMemberDisplayName(user)}
+                    <span aria-hidden="true">×</span>
+                  </button>
+                ))}
+              {draft.members
+                .filter((member) => !groupUserNameSet.has(member))
+                .map((member) => (
+                  <button type="button" className="selected-member-chip" disabled={!canEdit} key={member} onClick={() => removeMember(member)}>
+                    {member}
+                    <span aria-hidden="true">×</span>
+                  </button>
+                ))}
+            </>
           )}
         </div>
         {memberPanelOpen && (
           <div className="member-picker-panel">
             <span className="member-picker-title">グループメンバー</span>
             <div className="member-choice-list">
-              {groupMembers.length === 0 ? (
+              {groupUsers.length === 0 ? (
                 <div className="member-empty-text">{groupMembersError ? "グループメンバーを取得できません" : "グループメンバーはいません"}</div>
               ) : (
-                groupMembers.map((member) => {
-                  const selected = draft.members.includes(member);
+                groupUsers.map((user) => {
+                  const selected = selectedMemberIds.includes(user.id) || draft.members.includes(user.name);
+                  const displayName = getMemberDisplayName(user);
 
                   return (
-                    <button type="button" className={`member-choice-button ${selected ? "selected" : ""}`} disabled={!canEdit} key={member} onClick={() => addMember(member)}>
-                      {member}
+                    <button type="button" className={`member-choice-button ${selected ? "selected" : ""}`} disabled={!canEdit} key={user.id} onClick={() => addGroupMember(user)}>
+                      {displayName}
                     </button>
                   );
                 })
@@ -350,7 +409,7 @@ function ScheduleEditor({
             const selected = getScheduleTagColors(draft).includes(tag.color);
 
             return (
-              <label
+              <div
                 className={`tag-choice ${selected ? "selected" : ""}`}
                 key={tag.id}
                 onContextMenu={(event) => {
@@ -362,11 +421,18 @@ function ScheduleEditor({
                   type="checkbox"
                   checked={selected}
                   disabled={!canEdit}
+                  aria-label={`${tag.name}を選択`}
                   onChange={() => toggleTag(tag.color)}
                 />
                 <span className="tag-preview-dot" style={{ background: tag.color }} />
-                <span>{tag.name}</span>
-              </label>
+                <input
+                  className="tag-inline-name-input"
+                  value={tag.name}
+                  disabled={!canEdit}
+                  aria-label={`${tag.name}のタグ名`}
+                  onChange={(event) => onUpdateTag(tag.id, { name: event.target.value })}
+                />
+              </div>
             );
           })}
         </div>
@@ -412,8 +478,14 @@ function ScheduleEditor({
             <div className="memo-image-item" key={image.id}>
               <button className="memo-image-preview-button" type="button" onClick={() => setPreviewImage(image)}>
                 <MemoImageElement image={image} />
-                <span>{image.name}</span>
               </button>
+              <input
+                className="memo-image-name-input"
+                value={image.name}
+                disabled={!canEdit}
+                aria-label={`${image.name}の画像名`}
+                onChange={(event) => renameMemoImage(image.id, event.target.value)}
+              />
               {completedMemoImageIds.includes(image.id) ? (
                 <div className="memo-upload-status done" aria-label="画像保存完了">
                   <Check size={14} />

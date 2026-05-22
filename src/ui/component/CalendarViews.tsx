@@ -91,6 +91,7 @@ export function CalendarMonthDesktop({
           return (
             <div
               className={`month-day-cell ${isToday ? "today" : ""} ${isOutsideMonth ? "outside-month" : ""} ${isSelected ? "selected" : ""}`}
+              data-date-key={dateKey}
               key={dateKey}
               role="button"
               tabIndex={0}
@@ -212,7 +213,7 @@ export function CalendarWeekDesktop({ weekDates, schedules, fallbackMaxVisibleCo
             const hiddenByGroup = groupHiddenSchedules(laidOut);
 
             return (
-              <div className="day-column" key={dateKey}>
+              <div className="day-column" data-date-key={dateKey} key={dateKey}>
                 {laidOut
                   .filter((item) => !item.hidden)
                   .map((item) => (
@@ -288,7 +289,7 @@ export function CalendarDayDesktop({ date, schedules, fallbackMaxVisibleColumns,
             <div className="time-guide" style={{ top: `${(minute / 1440) * 100}%` }} key={minute} />
           ))}
           <div className="current-time-line" style={{ top: `${currentTop}%` }} />
-          <div className="day-column day-view-column">
+          <div className="day-column day-view-column" data-date-key={dateKey}>
             {laidOut
               .filter((item) => !item.hidden)
               .map((item) => (

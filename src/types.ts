@@ -9,6 +9,7 @@ export type Schedule = {
   startTime: string;
   endTime: string;
   members: string[];
+  memberIds?: string[];
   contractor: string;
   address: string;
   memo: string;
@@ -16,6 +17,7 @@ export type Schedule = {
   tagColor: string;
   tagColors?: string[];
   readBy: string[];
+  readByUserIds?: string[];
   changeReadBy?: string[];
   isPersonal?: boolean;
   createdAt?: string;

@@ -188,8 +188,8 @@ export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
   const tag = query.get("tag") ?? "";
 
   return schedules.filter((schedule) => {
-    if (role === "User" && member && !schedule.members.includes(member) && !schedule.isPersonal) return false;
-    if (role === "Guest" && member && !schedule.members.includes(member)) return false;
+    if (role === "User" && member && !schedule.members.includes(member) && !(schedule.memberIds ?? []).includes(member) && !schedule.isPersonal) return false;
+    if (role === "Guest" && member && !schedule.members.includes(member) && !(schedule.memberIds ?? []).includes(member)) return false;
     if (tag && !getScheduleTagColors(schedule).includes(tag)) return false;
     if (!text) return true;
 
@@ -216,7 +216,7 @@ export function filterSchedulesForUser(schedules: Schedule[], actor: ServerUser,
     if (schedule.groupId !== actor.groupId) return false;
     if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
     if (actor.role === "Admin") return true;
-    return schedule.members.includes(actor.name);
+    return (schedule.memberIds ?? []).includes(actor.id) || schedule.members.includes(actor.name);
   });
 
   return filterSchedules(scopedSchedules, query);
@@ -274,6 +274,7 @@ export function markScheduleRead(data: Database, scheduleId: string, member: str
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
   if (actor && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
   if (!schedule.readBy.includes(member)) schedule.readBy.push(member);
+  if (actor) schedule.readByUserIds = [...new Set([...(schedule.readByUserIds ?? []), actor.id])];
   return schedule;
 }
 
@@ -337,6 +338,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     startTime: normalizeTimeString(input.startTime ?? "09:00"),
     endTime: normalizeTimeString(input.endTime ?? "10:00"),
     members: input.members ?? [],
+    memberIds: input.memberIds ?? [],
     contractor: input.contractor ?? "",
     address: input.address ?? "",
     memo: input.memo ?? "",
@@ -344,6 +346,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     tagColor: input.tagColor ?? input.tagColors?.[0] ?? "#3b82f6",
     tagColors: input.tagColors ?? [input.tagColor ?? "#3b82f6"],
     readBy: input.readBy ?? [],
+    readByUserIds: input.readByUserIds ?? [],
     changeReadBy: input.changeReadBy ?? [],
     isPersonal: input.isPersonal ?? false,
     createdAt: input.createdAt ?? now,

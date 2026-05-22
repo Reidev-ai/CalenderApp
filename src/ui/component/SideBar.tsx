@@ -1,5 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
-import type { MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
+import type { AuthUser, MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { AdminSidebarContent } from "../ForAdmin/AdminSidebarContent";
 import { GuestSidebarContent } from "../ForGuest/GuestSidebarContent";
 import { UserSidebarContent } from "../ForUser/UserSidebarContent";
@@ -9,11 +9,14 @@ type SideBarProps = {
   role: UserRole;
   mode: SidebarMode;
   selectedSchedule: Schedule | null;
+  currentUserId: string;
   currentUserName: string;
   overlapList: Schedule[];
   tags: Tag[];
   addressCandidates: string[];
   groupMembers: string[];
+  groupUsers: AuthUser[];
+  memberDisplayNames: Record<string, string>;
   groupMembersError: string;
   onModeChange: (mode: SidebarMode) => void;
   onSelectSchedule: (schedule: Schedule) => void;
@@ -34,11 +37,14 @@ export function SideBar({
   role,
   mode,
   selectedSchedule,
+  currentUserId,
   currentUserName,
   overlapList,
   tags,
   addressCandidates,
   groupMembers,
+  groupUsers,
+  memberDisplayNames,
   groupMembersError,
   onModeChange,
   onSelectSchedule,
@@ -70,10 +76,13 @@ export function SideBar({
           mode={mode}
           role={role}
           selectedSchedule={selectedSchedule}
+          currentUserId={currentUserId}
           currentUserName={currentUserName}
           tags={tags}
           addressCandidates={addressCandidates}
           groupMembers={groupMembers}
+          groupUsers={groupUsers}
+          memberDisplayNames={memberDisplayNames}
           groupMembersError={groupMembersError}
           onSaveSchedule={onSaveSchedule}
           onUploadMemoImage={onUploadMemoImage}
@@ -86,9 +95,9 @@ export function SideBar({
           onDirtyChange={onDirtyChange}
         />
       ) : role === "User" ? (
-        <UserSidebarContent selectedSchedule={selectedSchedule} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
+        <UserSidebarContent selectedSchedule={selectedSchedule} currentUserId={currentUserId} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
       ) : (
-        <GuestSidebarContent selectedSchedule={selectedSchedule} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
+        <GuestSidebarContent selectedSchedule={selectedSchedule} currentUserId={currentUserId} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
       )}
     </aside>
   );

@@ -16,6 +16,7 @@ const trashStorageKey = "calender-trash-v1";
 const tagStorageKey = "calender-tags-v1";
 const offlineStorageKey = "calender-offline-cache-v1";
 const authStorageKey = "calender-auth-v1";
+const memberDisplayNameStorageKey = "calender-member-display-names-v1";
 type CaptureTarget = "current" | "members";
 type SearchSort = "dateAsc" | "dateDesc" | "updatedDesc" | "siteName";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
@@ -105,6 +106,7 @@ export default function App() {
   const [scopeFilters, setScopeFilters] = useState<string[]>([]);
   const [statusFilters, setStatusFilters] = useState<string[]>([]);
   const [groupUsers, setGroupUsers] = useState<AuthUser[]>([]);
+  const [memberDisplayNames, setMemberDisplayNames] = useState<Record<string, string>>({});
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupMembersError, setGroupMembersError] = useState("");
   const [apiMessage, setApiMessage] = useState("");
@@ -120,16 +122,24 @@ export default function App() {
   const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
   const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
   const selectedSchedule = draftNewSchedule ?? schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
+  const displayGroupUsers = useMemo(
+    () => groupUsers.map((user) => ({ ...user, name: memberDisplayNames[user.id]?.trim() || user.name })),
+    [groupUsers, memberDisplayNames],
+  );
+  const displayGroupMembers = useMemo(
+    () => mergeMemberNames(authSession?.user.name ? [memberDisplayNames[authSession.user.id]?.trim() || authSession.user.name] : [], displayGroupUsers.map((user) => user.name), groupMembers),
+    [authSession?.user.id, authSession?.user.name, displayGroupUsers, groupMembers, memberDisplayNames],
+  );
   const allMembers = useMemo(() => [...new Set(schedules.flatMap((schedule) => schedule.members))].sort(), [schedules]);
   const addressCandidates = useMemo(() => uniqueStrings(schedules.map((schedule) => schedule.address)), [schedules]);
   const allTags = useMemo(() => tags, [tags]);
   const visibleSchedules = useMemo(
-    () => filterSchedulesByUi(schedules, role, authSession?.user.name ?? currentMember, authSession?.user.groupId ?? "", searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters),
-    [authSession?.user.groupId, authSession?.user.name, schedules, role, searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters],
+    () => filterSchedulesByUi(schedules, role, authSession?.user.id ?? "", authSession?.user.name ?? currentMember, authSession?.user.groupId ?? "", searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters),
+    [authSession?.user.groupId, authSession?.user.id, authSession?.user.name, schedules, role, searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters],
   );
   const unreadSchedules = useMemo(
-    () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(authSession?.user.name ?? currentMember)),
-    [authSession?.user.name, visibleSchedules],
+    () => visibleSchedules.filter((schedule) => !(schedule.readByUserIds ?? []).includes(authSession?.user.id ?? "") && !schedule.readBy.includes(authSession?.user.name ?? currentMember)),
+    [authSession?.user.id, authSession?.user.name, visibleSchedules],
   );
   const unreadChangeSchedules = useMemo(
     () => visibleSchedules.filter((schedule) => !(schedule.changeReadBy ?? []).includes(authSession?.user.id ?? "")),
@@ -148,6 +158,23 @@ export default function App() {
       localStorage.removeItem(authStorageKey);
     }
   }, [authSession]);
+
+  useEffect(() => {
+    if (!authSession?.user.id) {
+      setMemberDisplayNames({});
+      return;
+    }
+
+    const allDisplayNames = readMemberDisplayNameStore();
+    setMemberDisplayNames(allDisplayNames[authSession.user.id] ?? {});
+  }, [authSession?.user.id]);
+
+  useEffect(() => {
+    if (!authSession?.user.id) return;
+    const allDisplayNames = readMemberDisplayNameStore();
+    allDisplayNames[authSession.user.id] = memberDisplayNames;
+    localStorage.setItem(memberDisplayNameStorageKey, JSON.stringify(allDisplayNames));
+  }, [authSession?.user.id, memberDisplayNames]);
 
   useEffect(() => {
     if (!authSession) return;
@@ -170,16 +197,11 @@ export default function App() {
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target;
       if (!(target instanceof Element)) return;
+      const dayCell = target.closest<HTMLElement>(".month-day-cell, .day-column");
+      if (dayCell?.dataset.dateKey === selectedDateKey) return;
       if (target.closest(
         [
-          ".month-day-cell",
-          ".day-column",
-          ".day-view-column",
-          ".task-cell",
-          ".month-task-chip",
-          ".hidden-count",
           ".sidebar",
-          ".topbar",
           ".search-result-panel",
           ".notification-panel",
           ".filter-popover",
@@ -264,7 +286,17 @@ export default function App() {
     }
   }
 
-  async function updateGroupMember(userId: string, patch: Partial<Pick<AuthUser, "name" | "role">>) {
+  function updateLocalMemberDisplayName(userId: string, displayName: string) {
+    setMemberDisplayNames((current) => {
+      const next = { ...current };
+      const normalizedName = displayName.trim();
+      if (normalizedName) next[userId] = normalizedName;
+      else delete next[userId];
+      return next;
+    });
+  }
+
+  async function updateGroupMember(userId: string, patch: Partial<Pick<AuthUser, "role">>) {
     if (!authSession) return;
 
     try {
@@ -474,6 +506,7 @@ export default function App() {
       ...schedule,
       id: createScheduleId(),
       readBy: [],
+      readByUserIds: [],
     };
     void saveSchedule(duplicated);
   }
@@ -502,6 +535,7 @@ export default function App() {
       startTime,
       endTime,
       members: isPersonal && authSession?.user.name ? [authSession.user.name] : [],
+      memberIds: isPersonal && authSession?.user.id ? [authSession.user.id] : [],
       contractor: "",
       address: "",
       memo: "",
@@ -509,6 +543,7 @@ export default function App() {
       tagColor: "#3b82f6",
       tagColors: ["#3b82f6"],
       readBy: [],
+      readByUserIds: [],
       isPersonal,
     };
     setDraftNewSchedule(schedule);
@@ -666,14 +701,14 @@ export default function App() {
     try {
       if (exportUsers.length === 1) {
         const user = exportUsers[0];
-        const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
+        const dataUrl = await renderCalendarImage(getSchedulesForMember(user));
         downloadDataUrl(dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`);
         return;
       }
 
       const zip = new JSZip();
       for (const user of exportUsers) {
-        const dataUrl = await renderCalendarImage(getSchedulesForMember(user.name));
+        const dataUrl = await renderCalendarImage(getSchedulesForMember(user));
         zip.file(
           `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`,
           dataUrlToBase64(dataUrl),
@@ -691,8 +726,8 @@ export default function App() {
     }
   }
 
-  function getSchedulesForMember(memberName: string) {
-    return visibleSchedules.filter((schedule) => schedule.members.includes(memberName));
+  function getSchedulesForMember(member: AuthUser) {
+    return visibleSchedules.filter((schedule) => (schedule.memberIds ?? []).includes(member.id) || schedule.members.includes(member.name));
   }
 
   function logout() {
@@ -734,10 +769,12 @@ export default function App() {
         unreadCount={unreadChangeSchedules.length}
         userName={authSession.user.name}
         groupId={authSession.user.groupId}
-        groupMembers={groupMembers}
+        groupMembers={displayGroupMembers}
         groupUsers={groupUsers}
         groupMembersError={groupMembersError}
+        memberDisplayNames={memberDisplayNames}
         onUpdateGroupMember={updateGroupMember}
+        onUpdateMemberDisplayName={updateLocalMemberDisplayName}
         onRemoveGroupMember={removeGroupMember}
         onGroupMembersRefresh={() => refreshGroupMembers(authSession.user.groupId)}
         onOpenSetting={() => setSettingOpen(true)}
@@ -837,11 +874,14 @@ export default function App() {
           role={role}
           mode={sidebarMode}
           selectedSchedule={selectedSchedule}
+          currentUserId={authSession.user.id}
           currentUserName={authSession.user.name}
           overlapList={overlapList}
           tags={tags}
           addressCandidates={addressCandidates}
-          groupMembers={groupMembers}
+          groupMembers={displayGroupMembers}
+          groupUsers={groupUsers}
+          memberDisplayNames={memberDisplayNames}
           groupMembersError={groupMembersError}
           onModeChange={changeSidebarMode}
           onSelectSchedule={openSchedule}
@@ -967,7 +1007,9 @@ type TopBarProps = {
   groupMembers: string[];
   groupUsers: AuthUser[];
   groupMembersError: string;
-  onUpdateGroupMember: (userId: string, patch: Partial<Pick<AuthUser, "name" | "role">>) => void;
+  memberDisplayNames: Record<string, string>;
+  onUpdateGroupMember: (userId: string, patch: Partial<Pick<AuthUser, "role">>) => void;
+  onUpdateMemberDisplayName: (userId: string, displayName: string) => void;
   onRemoveGroupMember: (userId: string, memberName: string) => void;
   onGroupMembersRefresh: () => void;
   onOpenSetting: () => void;
@@ -1001,7 +1043,9 @@ function TopBar({
   groupMembers,
   groupUsers,
   groupMembersError,
+  memberDisplayNames,
   onUpdateGroupMember,
+  onUpdateMemberDisplayName,
   onRemoveGroupMember,
   onGroupMembersRefresh,
   onOpenSetting,
@@ -1216,17 +1260,20 @@ function TopBar({
               <div className="account-member-list">
                 {groupUsers.length > 0 ? (
                   groupUsers.map((member) => {
-                    const draftName = editingMemberNameById[member.id] ?? member.name;
+                    const displayName = memberDisplayNames[member.id] ?? "";
+                    const draftName = editingMemberNameById[member.id] ?? displayName;
+                    const effectiveName = draftName.trim() || member.name;
 
                     return (
                       <div className="account-member-item editable" key={member.id}>
-                        <span className="account-member-avatar">{getUserInitial(member.name)}</span>
+                        <span className="account-member-avatar">{getUserInitial(effectiveName)}</span>
                         <input
                           value={draftName}
+                          placeholder={member.name}
                           aria-label={`${member.name}の表示名`}
                           onChange={(event) => setEditingMemberNameById((current) => ({ ...current, [member.id]: event.target.value }))}
                           onBlur={() => {
-                            if (draftName.trim() && draftName.trim() !== member.name) onUpdateGroupMember(member.id, { name: draftName.trim() });
+                            onUpdateMemberDisplayName(member.id, draftName);
                           }}
                         />
                         <select value={member.role} onChange={(event) => onUpdateGroupMember(member.id, { role: event.target.value as UserRole })}>
@@ -2089,6 +2136,7 @@ function openFeedbackMail() {
 function filterSchedulesByUi(
   schedules: Schedule[],
   role: UserRole,
+  currentUserId: string,
   currentUserName: string,
   currentGroupId: string,
   searchQuery: string,
@@ -2101,15 +2149,16 @@ function filterSchedulesByUi(
 
   return schedules.filter((schedule) => {
     if (schedule.groupId !== currentGroupId) return false;
-    if (role === "User" && !schedule.members.includes(currentUserName) && !schedule.isPersonal) return false;
-    if (role === "Guest" && !schedule.members.includes(currentUserName)) return false;
-    if (memberFilters.length > 0 && !memberFilters.some((member) => schedule.members.includes(member))) return false;
+    const scheduleMemberIds = schedule.memberIds ?? [];
+    if (role === "User" && !scheduleMemberIds.includes(currentUserId) && !schedule.members.includes(currentUserName) && !schedule.isPersonal) return false;
+    if (role === "Guest" && !scheduleMemberIds.includes(currentUserId) && !schedule.members.includes(currentUserName)) return false;
+    if (memberFilters.length > 0 && !memberFilters.some((member) => scheduleMemberIds.includes(member) || schedule.members.includes(member))) return false;
     if (tagFilters.length > 0 && !tagFilters.some((tagColor) => getScheduleTagColors(schedule).includes(tagColor))) return false;
     if (scopeFilters.length > 0) {
       const scheduleScope = schedule.isPersonal ? "personal" : "group";
       if (!scopeFilters.includes(scheduleScope)) return false;
     }
-    if (statusFilters.includes("unread") && schedule.readBy.includes(currentUserName)) return false;
+    if (statusFilters.includes("unread") && ((schedule.readByUserIds ?? []).includes(currentUserId) || schedule.readBy.includes(currentUserName))) return false;
     if (!normalizedQuery) return true;
 
     return [
@@ -2223,6 +2272,17 @@ function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {
 
 function uniqueStrings(values: string[]) {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right, "ja"));
+}
+
+function readMemberDisplayNameStore() {
+  const saved = localStorage.getItem(memberDisplayNameStorageKey);
+  if (!saved) return {} as Record<string, Record<string, string>>;
+
+  try {
+    return JSON.parse(saved) as Record<string, Record<string, string>>;
+  } catch {
+    return {};
+  }
 }
 
 function useCurrentTime() {
