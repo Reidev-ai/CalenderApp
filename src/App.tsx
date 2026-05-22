@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { toPng } from "html-to-image";
 import JSZip from "jszip";
-import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, MessageSquare, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
-import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
+import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, MemoImage, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
 import { LoginView } from "./ui/Share/login/LoginView";
 import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop } from "./ui/component/CalendarViews";
 import { SideBar } from "./ui/component/SideBar";
@@ -36,6 +36,35 @@ const defaultTags: Tag[] = [
 ];
 
 export default function App() {
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      void postClientLog({
+        level: "error",
+        message: event.message,
+        stack: event.error instanceof Error ? event.error.stack : undefined,
+        path: window.location.href,
+        userAgent: navigator.userAgent,
+      });
+    };
+    const handleUnhandledRejection = (event: PromiseRejectionEvent) => {
+      const reason = event.reason;
+      void postClientLog({
+        level: "error",
+        message: reason instanceof Error ? reason.message : String(reason),
+        stack: reason instanceof Error ? reason.stack : undefined,
+        path: window.location.href,
+        userAgent: navigator.userAgent,
+      });
+    };
+
+    window.addEventListener("error", handleError);
+    window.addEventListener("unhandledrejection", handleUnhandledRejection);
+    return () => {
+      window.removeEventListener("error", handleError);
+      window.removeEventListener("unhandledrejection", handleUnhandledRejection);
+    };
+  }, []);
+
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
     const saved = localStorage.getItem(authStorageKey);
     return saved ? (JSON.parse(saved) as AuthSession) : null;
@@ -73,6 +102,8 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchSort, setSearchSort] = useState<SearchSort>("dateAsc");
   const [memberFilters, setMemberFilters] = useState<string[]>([]);
+  const [scopeFilters, setScopeFilters] = useState<string[]>([]);
+  const [statusFilters, setStatusFilters] = useState<string[]>([]);
   const [groupUsers, setGroupUsers] = useState<AuthUser[]>([]);
   const [groupMembers, setGroupMembers] = useState<string[]>([]);
   const [groupMembersError, setGroupMembersError] = useState("");
@@ -90,10 +121,11 @@ export default function App() {
   const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
   const selectedSchedule = draftNewSchedule ?? schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
   const allMembers = useMemo(() => [...new Set(schedules.flatMap((schedule) => schedule.members))].sort(), [schedules]);
+  const addressCandidates = useMemo(() => uniqueStrings(schedules.map((schedule) => schedule.address)), [schedules]);
   const allTags = useMemo(() => tags, [tags]);
   const visibleSchedules = useMemo(
-    () => filterSchedulesByUi(schedules, role, searchQuery, memberFilters, tagFilters),
-    [schedules, role, searchQuery, memberFilters, tagFilters],
+    () => filterSchedulesByUi(schedules, role, authSession?.user.name ?? currentMember, authSession?.user.groupId ?? "", searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters),
+    [authSession?.user.groupId, authSession?.user.name, schedules, role, searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters],
   );
   const unreadSchedules = useMemo(
     () => visibleSchedules.filter((schedule) => !schedule.readBy.includes(authSession?.user.name ?? currentMember)),
@@ -107,7 +139,7 @@ export default function App() {
     () => visibleSchedules.filter((schedule) => (schedule.changeReadBy ?? []).includes(authSession?.user.id ?? "")),
     [authSession?.user.id, visibleSchedules],
   );
-  const searchActive = searchQuery.trim() !== "" || memberFilters.length > 0 || tagFilters.length > 0;
+  const searchActive = searchQuery.trim() !== "" || memberFilters.length > 0 || tagFilters.length > 0 || scopeFilters.length > 0 || statusFilters.length > 0;
 
   useEffect(() => {
     if (authSession) {
@@ -120,7 +152,6 @@ export default function App() {
   useEffect(() => {
     if (!authSession) return;
 
-    void refreshGroupMembers(authSession.user.groupId);
     void refreshServerData();
   }, [authSession?.user.groupId]);
 
@@ -133,16 +164,56 @@ export default function App() {
     });
   }, [groupUsers]);
 
+  useEffect(() => {
+    if (!selectedScheduleId && !draftNewSchedule) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Element)) return;
+      if (target.closest(
+        [
+          ".month-day-cell",
+          ".day-column",
+          ".day-view-column",
+          ".task-cell",
+          ".month-task-chip",
+          ".hidden-count",
+          ".sidebar",
+          ".topbar",
+          ".search-result-panel",
+          ".notification-panel",
+          ".filter-popover",
+          ".account-panel",
+          ".mobile-action-drawer",
+          ".setting-drawer",
+          ".capture-panel",
+          ".tag-context-menu",
+          ".context-menu-backdrop",
+        ].join(","),
+      )) return;
+
+      clearSelectedSchedule();
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [draftNewSchedule, selectedScheduleId, dirtyEditor]);
+
   async function refreshServerData() {
+    if (!authSession) return;
     setApiMessage("");
 
     try {
+      const authPayload = await getApiJson<{ user: AuthUser }>("/api/auth/me");
+      setAuthSession((current) => current ? { ...current, user: authPayload.user } : current);
+      const groupId = authPayload.user.groupId;
       const [schedulePayload, trashPayload, tagPayload] = await Promise.all([
         getApiJson<{ schedules: Schedule[] }>("/api/schedules"),
         getApiJson<{ schedules: Schedule[] }>("/api/trash"),
         getApiJson<{ tags: Tag[] }>("/api/tags"),
       ]);
-      const cache = loadOfflineCache();
+      void refreshGroupMembers(groupId);
+      const cache = loadOfflineCache(groupId);
       const nextSchedules = cache ? mergeLatestSchedules(schedulePayload.schedules, cache.schedules) : schedulePayload.schedules;
       const nextTrashSchedules = cache ? mergeLatestSchedules(trashPayload.schedules, cache.trashSchedules) : trashPayload.schedules;
       setSchedules(nextSchedules);
@@ -150,9 +221,10 @@ export default function App() {
       setTags(tagPayload.tags);
       setSelectedScheduleId((current) => current ?? nextSchedules[0]?.id ?? null);
       setOfflineMode(false);
-      saveOfflineCache(nextSchedules, nextTrashSchedules, tagPayload.tags);
+      saveOfflineCache(groupId, nextSchedules, nextTrashSchedules, tagPayload.tags);
     } catch (error) {
-      const cache = loadOfflineCache();
+      const groupId = authSession.user.groupId;
+      const cache = loadOfflineCache(groupId);
       if (cache) {
         setSchedules(cache.schedules);
         setTrashSchedules(cache.trashSchedules);
@@ -207,8 +279,8 @@ export default function App() {
   async function removeGroupMember(userId: string, memberName: string) {
     if (!authSession) return;
     if (!confirm(`${memberName} を完全に削除します。この操作は取り消せません。続けますか？`)) return;
-    const typedName = prompt(`削除するには「${memberName}」と入力してください`);
-    if (typedName !== memberName) {
+    const typedName = prompt(`削除するには「${memberName}」を完全入力、または「DELETE」と入力してください`);
+    if (typedName !== memberName && typedName !== "DELETE") {
       setApiMessage("入力が一致しなかったため削除を中止しました");
       return;
     }
@@ -331,11 +403,16 @@ export default function App() {
       const payload = exists
         ? await putApiJson<{ schedule: Schedule }>(`/api/schedules/${encodeURIComponent(normalizedSchedule.id)}`, normalizedSchedule)
         : await postApiJson<{ schedule: Schedule }>("/api/schedules", normalizedSchedule);
+      const savedSchedule = {
+        ...payload.schedule,
+        groupId: payload.schedule.groupId ?? normalizedSchedule.groupId,
+        ownerUserId: payload.schedule.ownerUserId ?? normalizedSchedule.ownerUserId,
+      };
       setSchedules((current) => {
-        const hasSchedule = current.some((item) => item.id === payload.schedule.id);
-        return hasSchedule ? current.map((item) => (item.id === payload.schedule.id ? payload.schedule : item)) : [...current, payload.schedule];
+        const hasSchedule = current.some((item) => item.id === savedSchedule.id);
+        return hasSchedule ? current.map((item) => (item.id === savedSchedule.id ? savedSchedule : item)) : [...current, savedSchedule];
       });
-      setSelectedScheduleId(payload.schedule.id);
+      setSelectedScheduleId(savedSchedule.id);
       setDraftNewSchedule(null);
       setSidebarMode("edit");
       setDirtyEditor(false);
@@ -343,6 +420,23 @@ export default function App() {
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "スケジュールを保存できませんでした");
     }
+  }
+
+  async function uploadMemoImage(file: File, onProgress: (progress: number) => void) {
+    onProgress(5);
+    const dataUrl = await readFileAsDataUrl(file, (progress) => onProgress(progress * 0.35));
+    onProgress(35);
+    const payload = await postApiJsonWithProgress<{ image: MemoImage }>(
+      "/api/memo-images",
+      {
+        name: file.name,
+        type: file.type,
+        dataUrl,
+      },
+      (progress) => onProgress(35 + progress * 0.65),
+    );
+    onProgress(100);
+    return payload.image;
   }
 
   async function deleteSchedule(scheduleId: string) {
@@ -379,10 +473,16 @@ export default function App() {
     const duplicated = {
       ...schedule,
       id: createScheduleId(),
-      siteName: `${schedule.siteName} コピー`,
       readBy: [],
     };
     void saveSchedule(duplicated);
+  }
+
+  function clearSelectedSchedule() {
+    if (!confirmDiscardIfDirty()) return;
+    setDraftNewSchedule(null);
+    setSelectedScheduleId(null);
+    setSidebarMode("detail");
   }
 
   function createNewSchedule() {
@@ -405,6 +505,7 @@ export default function App() {
       contractor: "",
       address: "",
       memo: "",
+      memoImages: [],
       tagColor: "#3b82f6",
       tagColors: ["#3b82f6"],
       readBy: [],
@@ -600,6 +701,14 @@ export default function App() {
     setSidebarMode("detail");
   }
 
+  function clearLocalCache() {
+    clearCalendarLocalCache();
+    setSchedules([]);
+    setTrashSchedules([]);
+    setApiMessage("ローカルキャッシュを削除しました");
+    if (authSession) void refreshServerData();
+  }
+
   if (!authSession) {
     return <LoginView onAuthenticated={setAuthSession} />;
   }
@@ -617,6 +726,8 @@ export default function App() {
         role={role}
         searchQuery={searchQuery}
         memberFilters={memberFilters}
+        scopeFilters={scopeFilters}
+        statusFilters={statusFilters}
         tagFilters={tagFilters}
         members={allMembers}
         tags={allTags}
@@ -635,6 +746,8 @@ export default function App() {
         onLogout={logout}
         onSearchQueryChange={setSearchQuery}
         onMemberFiltersChange={setMemberFilters}
+        onScopeFiltersChange={setScopeFilters}
+        onStatusFiltersChange={setStatusFilters}
         onTagFiltersChange={setTagFilters}
         onCreateNew={createNewSchedule}
         onToday={goToday}
@@ -655,23 +768,29 @@ export default function App() {
             onClear={() => {
               setSearchQuery("");
               setMemberFilters([]);
+              setScopeFilters([]);
+              setStatusFilters([]);
               setTagFilters([]);
             }}
           />
         )}
         {notificationOpen && (
-          <NotificationPanel
-            unreadSchedules={unreadChangeSchedules}
-            confirmedSchedules={confirmedChangeSchedules}
-            onSelectSchedule={(schedule) => {
-              openSchedule(schedule);
-              setNotificationOpen(false);
-            }}
-            onMarkAsRead={(schedule) => {
-              void markScheduleChangeAsRead(schedule);
-            }}
-          />
+          <>
+            <button className="panel-light-dismiss" aria-label="通知を閉じる" onClick={() => setNotificationOpen(false)} />
+            <NotificationPanel
+              unreadSchedules={unreadChangeSchedules}
+              confirmedSchedules={confirmedChangeSchedules}
+              onSelectSchedule={(schedule) => {
+                openSchedule(schedule);
+                setNotificationOpen(false);
+              }}
+              onMarkAsRead={(schedule) => {
+                void markScheduleChangeAsRead(schedule);
+              }}
+            />
+          </>
         )}
+        <button className="workspace-clear-hit-area" aria-label="選択を解除" onClick={clearSelectedSchedule} />
         {viewMode === "month" ? (
           <CalendarMonthDesktop
             anchorDate={anchorDate}
@@ -718,17 +837,21 @@ export default function App() {
           role={role}
           mode={sidebarMode}
           selectedSchedule={selectedSchedule}
+          currentUserName={authSession.user.name}
           overlapList={overlapList}
           tags={tags}
+          addressCandidates={addressCandidates}
           groupMembers={groupMembers}
           groupMembersError={groupMembersError}
           onModeChange={changeSidebarMode}
           onSelectSchedule={openSchedule}
           onSaveSchedule={saveSchedule}
+          onUploadMemoImage={uploadMemoImage}
           onDeleteSchedule={deleteSchedule}
           onDuplicateSchedule={duplicateSchedule}
           onMarkAsRead={markSelectedAsRead}
           onAddTag={addTag}
+          onUpdateTag={updateTag}
           onOpenTagContextMenu={openTagContextMenu}
           onStartResize={startSidebarResize}
           onDirtyChange={setDirtyEditor}
@@ -746,6 +869,7 @@ export default function App() {
         onUpdateTag={updateTag}
         onRestoreSchedule={restoreSchedule}
         onOpenTagContextMenu={openTagContextMenu}
+        onClearLocalCache={clearLocalCache}
         onClose={() => setSettingOpen(false)}
       />
       {capturePanelOpen && (
@@ -832,6 +956,8 @@ type TopBarProps = {
   role: UserRole;
   searchQuery: string;
   memberFilters: string[];
+  scopeFilters: string[];
+  statusFilters: string[];
   tagFilters: string[];
   members: string[];
   tags: Tag[];
@@ -850,6 +976,8 @@ type TopBarProps = {
   onLogout: () => void;
   onSearchQueryChange: (query: string) => void;
   onMemberFiltersChange: (members: string[]) => void;
+  onScopeFiltersChange: (scopes: string[]) => void;
+  onStatusFiltersChange: (statuses: string[]) => void;
   onTagFiltersChange: (tags: string[]) => void;
   onCreateNew: () => void;
   onToday: () => void;
@@ -862,6 +990,8 @@ function TopBar({
   role,
   searchQuery,
   memberFilters,
+  scopeFilters,
+  statusFilters,
   tagFilters,
   members,
   tags,
@@ -880,6 +1010,8 @@ function TopBar({
   onLogout,
   onSearchQueryChange,
   onMemberFiltersChange,
+  onScopeFiltersChange,
+  onStatusFiltersChange,
   onTagFiltersChange,
   onCreateNew,
   onToday,
@@ -893,7 +1025,7 @@ function TopBar({
   const [joinRequestLoading, setJoinRequestLoading] = useState(false);
   const [joinRequestMessage, setJoinRequestMessage] = useState("");
   const [editingMemberNameById, setEditingMemberNameById] = useState<Record<string, string>>({});
-  const hasFilter = memberFilters.length > 0 || tagFilters.length > 0;
+  const hasFilter = memberFilters.length > 0 || tagFilters.length > 0 || scopeFilters.length > 0 || statusFilters.length > 0;
   const userInitial = getUserInitial(userName);
   const pendingJoinRequests = joinRequests.filter((request) => request.status === "pending");
 
@@ -949,39 +1081,76 @@ function TopBar({
             <span className="button-label">フィルター</span>
           </button>
           {filterOpen && (
-            <div className="filter-popover">
-              <div className="filter-field">
-                <span>メンバー</span>
-                <div className="filter-check-list">
-                  {members.map((member) => (
-                    <label className="filter-check-item" key={member}>
+            <>
+              <button className="panel-light-dismiss" aria-label="フィルターを閉じる" onClick={() => setFilterOpen(false)} />
+              <div className="filter-popover">
+                <div className="filter-field">
+                  <span>メンバー</span>
+                  <div className="filter-check-list">
+                    {members.map((member) => (
+                      <label className="filter-check-item" key={member}>
+                        <input
+                          type="checkbox"
+                          checked={memberFilters.includes(member)}
+                          onChange={() => onMemberFiltersChange(toggleListValue(memberFilters, member))}
+                        />
+                        <span>{member}</span>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="filter-field">
+                  <span>種別</span>
+                  <div className="filter-check-list">
+                    <label className="filter-check-item">
                       <input
                         type="checkbox"
-                        checked={memberFilters.includes(member)}
-                        onChange={() => onMemberFiltersChange(toggleListValue(memberFilters, member))}
+                        checked={scopeFilters.includes("personal")}
+                        onChange={() => onScopeFiltersChange(toggleListValue(scopeFilters, "personal"))}
                       />
-                      <span>{member}</span>
+                      <span>個人</span>
                     </label>
-                  ))}
-                </div>
-              </div>
-              <div className="filter-field">
-                <span>タグ</span>
-                <div className="filter-check-list">
-                  {tags.map((tag) => (
-                    <label className="filter-check-item" key={tag.id}>
+                    <label className="filter-check-item">
                       <input
                         type="checkbox"
-                        checked={tagFilters.includes(tag.color)}
-                        onChange={() => onTagFiltersChange(toggleListValue(tagFilters, tag.color))}
+                        checked={scopeFilters.includes("group")}
+                        onChange={() => onScopeFiltersChange(toggleListValue(scopeFilters, "group"))}
                       />
-                      <span className="tag-preview-dot" style={{ background: tag.color }} />
-                      <span>{tag.name}</span>
+                      <span>グループ</span>
                     </label>
-                  ))}
+                  </div>
+                </div>
+                <div className="filter-field">
+                  <span>状態</span>
+                  <div className="filter-check-list">
+                    <label className="filter-check-item">
+                      <input
+                        type="checkbox"
+                        checked={statusFilters.includes("unread")}
+                        onChange={() => onStatusFiltersChange(toggleListValue(statusFilters, "unread"))}
+                      />
+                      <span>未確認タスク</span>
+                    </label>
+                  </div>
+                </div>
+                <div className="filter-field">
+                  <span>タグ</span>
+                  <div className="filter-check-list">
+                    {tags.map((tag) => (
+                      <label className="filter-check-item" key={tag.id}>
+                        <input
+                          type="checkbox"
+                          checked={tagFilters.includes(tag.color)}
+                          onChange={() => onTagFiltersChange(toggleListValue(tagFilters, tag.color))}
+                        />
+                        <span className="tag-preview-dot" style={{ background: tag.color }} />
+                        <span>{tag.name}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               </div>
-            </div>
+            </>
           )}
         </div>
         <button className="icon-button" aria-label="設定" onClick={onOpenSetting}>
@@ -1157,6 +1326,40 @@ function TopBar({
                 </div>
               </div>
               <div className="filter-field">
+                <span>種別</span>
+                <div className="filter-check-list">
+                  <label className="filter-check-item">
+                    <input
+                      type="checkbox"
+                      checked={scopeFilters.includes("personal")}
+                      onChange={() => onScopeFiltersChange(toggleListValue(scopeFilters, "personal"))}
+                    />
+                    <span>個人</span>
+                  </label>
+                  <label className="filter-check-item">
+                    <input
+                      type="checkbox"
+                      checked={scopeFilters.includes("group")}
+                      onChange={() => onScopeFiltersChange(toggleListValue(scopeFilters, "group"))}
+                    />
+                    <span>グループ</span>
+                  </label>
+                </div>
+              </div>
+              <div className="filter-field">
+                <span>状態</span>
+                <div className="filter-check-list">
+                  <label className="filter-check-item">
+                    <input
+                      type="checkbox"
+                      checked={statusFilters.includes("unread")}
+                      onChange={() => onStatusFiltersChange(toggleListValue(statusFilters, "unread"))}
+                    />
+                    <span>未確認タスク</span>
+                  </label>
+                </div>
+              </div>
+              <div className="filter-field">
                 <span>タグ</span>
                 <div className="filter-check-list">
                   {tags.map((tag) => (
@@ -1259,6 +1462,48 @@ async function postApiJson<T>(path: string, body?: unknown): Promise<T> {
   });
 }
 
+async function postApiJsonWithProgress<T>(path: string, body: unknown, onProgress: (progress: number) => void): Promise<T> {
+  const apiBaseUrl = getApiBaseUrl();
+  const authToken = getStoredAuthToken();
+  const payload = JSON.stringify(body);
+
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", `${apiBaseUrl}${path}`);
+    request.setRequestHeader("Content-Type", "application/json");
+    if (authToken) request.setRequestHeader("Authorization", `Bearer ${authToken}`);
+
+    request.upload.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress(Math.min(100, (event.loaded / event.total) * 100));
+      }
+    };
+
+    request.onerror = () => reject(new Error(`APIに接続できません: ${apiBaseUrl}`));
+    request.onload = () => {
+      let responsePayload: { error?: string } | T;
+      try {
+        responsePayload = JSON.parse(request.responseText || "{}") as { error?: string } | T;
+      } catch {
+        reject(new Error("API response parse error"));
+        return;
+      }
+
+      if (request.status < 200 || request.status >= 300) {
+        const errorMessage = typeof responsePayload === "object" && responsePayload && "error" in responsePayload
+          ? String(responsePayload.error ?? "API error")
+          : "API error";
+        reject(new Error(errorMessage));
+        return;
+      }
+
+      resolve(responsePayload as T);
+    };
+
+    request.send(payload);
+  });
+}
+
 async function putApiJson<T>(path: string, body: unknown): Promise<T> {
   return requestApiJson<T>(path, {
     method: "PUT",
@@ -1277,6 +1522,14 @@ async function patchApiJson<T>(path: string, body: unknown): Promise<T> {
 
 async function deleteApiJson<T>(path: string): Promise<T> {
   return requestApiJson<T>(path, { method: "DELETE" });
+}
+
+async function postClientLog(payload: Record<string, unknown>) {
+  try {
+    await postApiJson("/api/client-logs", payload);
+  } catch {
+    // Logging must never interrupt the user flow.
+  }
 }
 
 async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
@@ -1319,7 +1572,21 @@ function getApiBaseUrl() {
   return `http://${window.location.hostname}:8787`;
 }
 
-function saveOfflineCache(schedules: Schedule[], trashSchedules: Schedule[], tags: Tag[]) {
+function readFileAsDataUrl(file: File, onProgress?: (progress: number) => void) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.onprogress = (event) => {
+      if (event.lengthComputable && event.total > 0) {
+        onProgress?.(Math.min(100, (event.loaded / event.total) * 100));
+      }
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function saveOfflineCache(groupId: string, schedules: Schedule[], trashSchedules: Schedule[], tags: Tag[]) {
   const today = new Date();
   const minDate = new Date(today);
   minDate.setFullYear(minDate.getFullYear() - 1);
@@ -1327,8 +1594,8 @@ function saveOfflineCache(schedules: Schedule[], trashSchedules: Schedule[], tag
   maxDate.setFullYear(maxDate.getFullYear() + 2);
   const minKey = toDateKey(minDate);
   const maxKey = toDateKey(maxDate);
-  const inRange = (schedule: Schedule) => schedule.date <= maxKey && (schedule.endDate ?? schedule.date) >= minKey;
-  localStorage.setItem(offlineStorageKey, JSON.stringify({
+  const inRange = (schedule: Schedule) => schedule.groupId === groupId && schedule.date <= maxKey && (schedule.endDate ?? schedule.date) >= minKey;
+  localStorage.setItem(getOfflineStorageKey(groupId), JSON.stringify({
     savedAt: new Date().toISOString(),
     schedules: schedules.filter(inRange),
     trashSchedules: trashSchedules.filter(inRange),
@@ -1336,15 +1603,33 @@ function saveOfflineCache(schedules: Schedule[], trashSchedules: Schedule[], tag
   }));
 }
 
-function loadOfflineCache(): { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] } | null {
-  const saved = localStorage.getItem(offlineStorageKey);
+function loadOfflineCache(groupId: string): { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] } | null {
+  const saved = localStorage.getItem(getOfflineStorageKey(groupId));
   if (!saved) return null;
 
   try {
-    return JSON.parse(saved) as { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] };
+    const cache = JSON.parse(saved) as { schedules: Schedule[]; trashSchedules: Schedule[]; tags: Tag[] };
+    return {
+      ...cache,
+      schedules: cache.schedules.filter((schedule) => schedule.groupId === groupId),
+      trashSchedules: cache.trashSchedules.filter((schedule) => schedule.groupId === groupId),
+    };
   } catch {
     return null;
   }
+}
+
+function getOfflineStorageKey(groupId: string) {
+  return `${offlineStorageKey}:${groupId}`;
+}
+
+function clearCalendarLocalCache() {
+  const exactKeys = new Set([storageKey, trashStorageKey, tagStorageKey, offlineStorageKey]);
+  Object.keys(localStorage).forEach((key) => {
+    if (exactKeys.has(key) || key.startsWith(`${offlineStorageKey}:`)) {
+      localStorage.removeItem(key);
+    }
+  });
 }
 
 function mergeLatestSchedules(serverSchedules: Schedule[], cachedSchedules: Schedule[]) {
@@ -1460,9 +1745,9 @@ function SearchResultPanel({
           <span>{sortedSchedules.length}件</span>
         </div>
         <select className="search-sort-select" value={sort} onChange={(event) => onSortChange(event.target.value as SearchSort)}>
-          <option value="dateAsc">日時が早い順</option>
-          <option value="dateDesc">日時が遅い順</option>
-          <option value="updatedDesc">更新が新しい順</option>
+          <option value="dateAsc">日時昇順</option>
+          <option value="dateDesc">日時降順</option>
+          <option value="updatedDesc">更新順</option>
           <option value="siteName">現場名順</option>
         </select>
         <button className="text-button" onClick={onClear}>クリア</button>
@@ -1650,6 +1935,7 @@ function SettingDrawer({
   onUpdateTag,
   onRestoreSchedule,
   onOpenTagContextMenu,
+  onClearLocalCache,
   onClose,
 }: {
   open: boolean;
@@ -1663,6 +1949,7 @@ function SettingDrawer({
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onRestoreSchedule: (schedule: Schedule) => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
+  onClearLocalCache: () => void;
   onClose: () => void;
 }) {
   const [draggedPriorityIndex, setDraggedPriorityIndex] = useState<number | null>(null);
@@ -1772,25 +2059,57 @@ function SettingDrawer({
             </div>
           )}
         </div>
+        <button className="secondary-button full-width-button settings-feedback-button" onClick={openFeedbackMail}>
+          <MessageSquare size={16} />
+          フィードバック
+        </button>
+        <button className="secondary-button full-width-button settings-cache-button" onClick={onClearLocalCache}>
+          ローカルキャッシュ削除
+        </button>
       </aside>
     </>
   );
 }
 
+function openFeedbackMail() {
+  const subject = encodeURIComponent("Calendar フィードバック");
+  const body = encodeURIComponent([
+    "内容:",
+    "",
+    "",
+    "発生日時:",
+    new Date().toLocaleString("ja-JP"),
+    "",
+    "画面:",
+    window.location.href,
+  ].join("\n"));
+  window.location.href = `mailto:?subject=${subject}&body=${body}`;
+}
+
 function filterSchedulesByUi(
   schedules: Schedule[],
   role: UserRole,
+  currentUserName: string,
+  currentGroupId: string,
   searchQuery: string,
   memberFilters: string[],
   tagFilters: string[],
+  scopeFilters: string[],
+  statusFilters: string[],
 ) {
   const normalizedQuery = searchQuery.trim().toLowerCase();
 
   return schedules.filter((schedule) => {
-    if (role === "User" && !schedule.members.includes(currentMember) && !schedule.isPersonal) return false;
-    if (role === "Guest" && !schedule.members.includes(currentMember)) return false;
+    if (schedule.groupId !== currentGroupId) return false;
+    if (role === "User" && !schedule.members.includes(currentUserName) && !schedule.isPersonal) return false;
+    if (role === "Guest" && !schedule.members.includes(currentUserName)) return false;
     if (memberFilters.length > 0 && !memberFilters.some((member) => schedule.members.includes(member))) return false;
     if (tagFilters.length > 0 && !tagFilters.some((tagColor) => getScheduleTagColors(schedule).includes(tagColor))) return false;
+    if (scopeFilters.length > 0) {
+      const scheduleScope = schedule.isPersonal ? "personal" : "group";
+      if (!scopeFilters.includes(scheduleScope)) return false;
+    }
+    if (statusFilters.includes("unread") && schedule.readBy.includes(currentUserName)) return false;
     if (!normalizedQuery) return true;
 
     return [
@@ -1804,6 +2123,7 @@ function filterSchedulesByUi(
       schedule.contractor,
       schedule.address,
       schedule.memo,
+      schedule.memoImages?.map((image) => image.name).join(" "),
     ]
       .join(" ")
       .toLowerCase()
@@ -1899,6 +2219,10 @@ function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {
     tagColors: nextColors,
     tagColor: nextColors[0] ?? "#3b82f6",
   };
+}
+
+function uniqueStrings(values: string[]) {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right, "ja"));
 }
 
 function useCurrentTime() {

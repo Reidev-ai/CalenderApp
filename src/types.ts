@@ -12,6 +12,7 @@ export type Schedule = {
   contractor: string;
   address: string;
   memo: string;
+  memoImages?: MemoImage[];
   tagColor: string;
   tagColors?: string[];
   readBy: string[];
@@ -19,6 +20,15 @@ export type Schedule = {
   isPersonal?: boolean;
   createdAt?: string;
   updatedAt?: string;
+};
+
+export type MemoImage = {
+  id: string;
+  name: string;
+  type: string;
+  dataUrl?: string;
+  url?: string;
+  createdAt: string;
 };
 
 export type Tag = {

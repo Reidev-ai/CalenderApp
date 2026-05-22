@@ -1,34 +1,42 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Copy, Minus, Plus, Trash2 } from "lucide-react";
-import type { Schedule, SidebarMode, Tag, UserRole } from "../../types";
-import { ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
+import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from "react";
+import { Check, Copy, ImagePlus, Minus, Plus, Trash2, X } from "lucide-react";
+import type { MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
+import { MemoImageElement, MemoImagePreviewOverlay, ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
 
 export function AdminSidebarContent({
   mode,
   role = "Admin",
   selectedSchedule,
+  currentUserName,
   tags,
+  addressCandidates,
   groupMembers,
   groupMembersError,
   onSaveSchedule,
+  onUploadMemoImage,
   onDeleteSchedule,
   onDuplicateSchedule,
   onMarkAsRead,
   onAddTag,
+  onUpdateTag,
   onOpenTagContextMenu,
   onDirtyChange,
 }: {
   mode: SidebarMode;
   role?: UserRole;
   selectedSchedule: Schedule | null;
+  currentUserName: string;
   tags: Tag[];
+  addressCandidates: string[];
   groupMembers: string[];
   groupMembersError: string;
-  onSaveSchedule: (schedule: Schedule) => void;
+  onSaveSchedule: (schedule: Schedule) => Promise<void>;
+  onUploadMemoImage: (file: File, onProgress: (progress: number) => void) => Promise<MemoImage>;
   onDeleteSchedule: (scheduleId: string) => void;
   onDuplicateSchedule: (schedule: Schedule) => void;
   onMarkAsRead: () => void;
   onAddTag: () => void;
+  onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onDirtyChange: (isDirty: boolean) => void;
 }) {
@@ -38,14 +46,18 @@ export function AdminSidebarContent({
     return (
       <ScheduleEditor
         schedule={selectedSchedule}
+        currentUserName={currentUserName}
         role={role}
         tags={tags}
+        addressCandidates={addressCandidates}
         groupMembers={groupMembers}
         groupMembersError={groupMembersError}
         onAddTag={onAddTag}
+        onUpdateTag={onUpdateTag}
         onOpenTagContextMenu={onOpenTagContextMenu}
         onDirtyChange={onDirtyChange}
         onSave={onSaveSchedule}
+        onUploadMemoImage={onUploadMemoImage}
         onDelete={onDeleteSchedule}
         onDuplicate={onDuplicateSchedule}
         onMarkAsRead={onMarkAsRead}
@@ -55,7 +67,7 @@ export function AdminSidebarContent({
 
   if (!selectedSchedule) return <div className="empty-state">タスクを選択してください</div>;
 
-  return <ScheduleDetail schedule={selectedSchedule} role="Admin" onMarkAsRead={onMarkAsRead} />;
+  return <ScheduleDetail schedule={selectedSchedule} role="Admin" currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />;
 }
 
 function EmptyEditorState({ onDirtyChange }: { onDirtyChange: (isDirty: boolean) => void }) {
@@ -66,29 +78,45 @@ function EmptyEditorState({ onDirtyChange }: { onDirtyChange: (isDirty: boolean)
   return <div className="empty-state">タスクを選択してください</div>;
 }
 
+type MemoImageUploadItem = {
+  id: string;
+  file: File;
+  name: string;
+  previewUrl: string;
+  progress: number;
+};
+
 function ScheduleEditor({
   schedule,
+  currentUserName,
   role,
   tags,
+  addressCandidates,
   groupMembers,
   groupMembersError,
   onAddTag,
+  onUpdateTag,
   onOpenTagContextMenu,
   onDirtyChange,
   onSave,
+  onUploadMemoImage,
   onDelete,
   onDuplicate,
   onMarkAsRead,
 }: {
   schedule: Schedule;
+  currentUserName: string;
   role: UserRole;
   tags: Tag[];
+  addressCandidates: string[];
   groupMembers: string[];
   groupMembersError: string;
   onAddTag: () => void;
+  onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onDirtyChange: (isDirty: boolean) => void;
-  onSave: (schedule: Schedule) => void;
+  onSave: (schedule: Schedule) => Promise<void>;
+  onUploadMemoImage: (file: File, onProgress: (progress: number) => void) => Promise<MemoImage>;
   onDelete: (scheduleId: string) => void;
   onDuplicate: (schedule: Schedule) => void;
   onMarkAsRead: () => void;
@@ -96,8 +124,15 @@ function ScheduleEditor({
   const [draft, setDraft] = useState(schedule);
   const [memberPanelOpen, setMemberPanelOpen] = useState(false);
   const [memberInput, setMemberInput] = useState("");
+  const [customMemberCandidates, setCustomMemberCandidates] = useState<string[]>([]);
+  const [previewImage, setPreviewImage] = useState<MemoImage | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [memoImageUploads, setMemoImageUploads] = useState<MemoImageUploadItem[]>([]);
+  const [completedMemoImageIds, setCompletedMemoImageIds] = useState<string[]>([]);
   const canEdit = role === "Admin" || (role === "User" && draft.isPersonal);
+  const isReadByCurrentUser = Boolean(currentUserName && draft.readBy.includes(currentUserName));
   const isDirty = JSON.stringify(draft) !== JSON.stringify(schedule);
+  const additionalMembers = uniqueMembers([...customMemberCandidates, ...draft.members]).filter((member) => !groupMembers.includes(member));
 
   useEffect(() => {
     setDraft(schedule);
@@ -108,8 +143,65 @@ function ScheduleEditor({
     return () => onDirtyChange(false);
   }, [isDirty, onDirtyChange]);
 
-  function updateDraft(field: keyof Schedule, value: string | string[] | boolean) {
+  function updateDraft(field: keyof Schedule, value: string | string[] | boolean | MemoImage[]) {
     setDraft((current) => ({ ...current, [field]: value }));
+  }
+
+  async function addMemoImages(files: FileList | null) {
+    if (!files || !canEdit) return;
+    const images = Array.from(files).filter((file) => !file.type || file.type.startsWith("image/"));
+    if (images.length === 0) return;
+
+    const uploadItems = images.map((file) => ({
+      id: createMemoImageId(),
+      file,
+      name: file.name || "添付画像",
+      previewUrl: URL.createObjectURL(file),
+      progress: 0,
+    }));
+    setMemoImageUploads((current) => [...current, ...uploadItems]);
+
+    for (const uploadItem of uploadItems) {
+      try {
+        const image = await onUploadMemoImage(uploadItem.file, (fileProgress) => {
+          setMemoImageUploads((current) => current.map((item) => (
+            item.id === uploadItem.id ? { ...item, progress: fileProgress } : item
+          )));
+        });
+
+        setMemoImageUploads((current) => current.filter((item) => item.id !== uploadItem.id));
+        setCompletedMemoImageIds((current) => [...current, image.id]);
+        URL.revokeObjectURL(uploadItem.previewUrl);
+        window.setTimeout(() => {
+          setCompletedMemoImageIds((current) => current.filter((id) => id !== image.id));
+        }, 1000);
+        setDraft((current) => ({
+          ...current,
+          memoImages: [...(current.memoImages ?? []), image],
+        }));
+      } catch (error) {
+        console.error("Failed to upload memo image", error);
+        URL.revokeObjectURL(uploadItem.previewUrl);
+        setMemoImageUploads((current) => current.filter((item) => item.id !== uploadItem.id));
+      }
+    }
+  }
+
+  function removeMemoImage(imageId: string) {
+    setDraft((current) => ({
+      ...current,
+      memoImages: (current.memoImages ?? []).filter((image) => image.id !== imageId),
+    }));
+  }
+
+  async function handleSave() {
+    if (!canEdit || saving) return;
+    setSaving(true);
+    try {
+      await onSave(draft);
+    } finally {
+      setSaving(false);
+    }
   }
 
   function updateDateTimeDraft(field: "date" | "endDate" | "startTime" | "endTime", value: string) {
@@ -119,6 +211,9 @@ function ScheduleEditor({
   function addMember(member: string) {
     const normalizedMember = member.trim();
     if (!normalizedMember) return;
+    if (!groupMembers.includes(normalizedMember)) {
+      setCustomMemberCandidates((current) => current.includes(normalizedMember) ? current : [...current, normalizedMember]);
+    }
     setDraft((current) => ({
       ...current,
       members: current.members.includes(normalizedMember) ? current.members : [...current.members, normalizedMember],
@@ -203,6 +298,22 @@ function ScheduleEditor({
               )}
             </div>
             {groupMembersError && <p className="member-picker-message">{groupMembersError}</p>}
+            {additionalMembers.length > 0 && (
+              <>
+                <span className="member-picker-title">追加メンバー</span>
+                <div className="member-choice-list">
+                  {additionalMembers.map((member) => {
+                    const selected = draft.members.includes(member);
+
+                    return (
+                      <button type="button" className={`member-choice-button ${selected ? "selected" : ""}`} disabled={!canEdit} key={member} onClick={() => addMember(member)}>
+                        {member}
+                      </button>
+                    );
+                  })}
+                </div>
+              </>
+            )}
             <span className="member-picker-title">その他メンバー</span>
             <div className="member-manual-row">
               <input
@@ -225,7 +336,7 @@ function ScheduleEditor({
         )}
       </div>
       <Field label="元請け業者" value={draft.contractor} disabled={!canEdit} onChange={(value) => updateDraft("contractor", value)} />
-      <Field label="住所" value={draft.address} disabled={!canEdit} onChange={(value) => updateDraft("address", value)} />
+      <AddressField value={draft.address} candidates={addressCandidates} disabled={!canEdit} onChange={(value) => updateDraft("address", value)} />
       <div className="field">
         <span className="field-label-row">
           タグ
@@ -260,8 +371,24 @@ function ScheduleEditor({
           })}
         </div>
       </div>
-      <label className="field">
-        <span>メモ</span>
+      <div className="field">
+        <span className="field-label-row">
+          メモ
+          <label className={`inline-add-button memo-image-add ${!canEdit ? "disabled" : ""}`}>
+            <ImagePlus size={14} />
+            画像
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              disabled={!canEdit}
+              onChange={(event) => {
+                void addMemoImages(event.target.files);
+                event.target.value = "";
+              }}
+            />
+          </label>
+        </span>
         <textarea
           className="auto-size-textarea"
           value={draft.memo}
@@ -269,23 +396,54 @@ function ScheduleEditor({
           rows={getTextareaRows(draft.memo)}
           onChange={(event) => updateDraft("memo", event.target.value)}
         />
-      </label>
+      </div>
+      {((draft.memoImages?.length ?? 0) > 0 || memoImageUploads.length > 0) && (
+        <div className="memo-image-grid">
+          {memoImageUploads.map((upload) => (
+            <div className="memo-image-item memo-image-upload-card" key={upload.id}>
+              <img src={upload.previewUrl} alt={upload.name} />
+              <span>{upload.name}</span>
+              <div className="memo-upload-status" aria-label="画像送信中">
+                <span className="memo-upload-ring" style={{ "--progress": `${upload.progress}%` } as CSSProperties} />
+              </div>
+            </div>
+          ))}
+          {draft.memoImages?.map((image) => (
+            <div className="memo-image-item" key={image.id}>
+              <button className="memo-image-preview-button" type="button" onClick={() => setPreviewImage(image)}>
+                <MemoImageElement image={image} />
+                <span>{image.name}</span>
+              </button>
+              {completedMemoImageIds.includes(image.id) ? (
+                <div className="memo-upload-status done" aria-label="画像保存完了">
+                  <Check size={14} />
+                </div>
+              ) : (
+                <button type="button" aria-label={`${image.name}を削除`} disabled={!canEdit} onClick={() => removeMemoImage(image.id)}>
+                  <X size={14} />
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {previewImage && <MemoImagePreviewOverlay image={previewImage} onClose={() => setPreviewImage(null)} />}
       <ReadStatus schedule={draft} />
       <div className="sidebar-actions">
         {isDirty ? (
-          <button type="button" className="secondary-button" onClick={() => setDraft(schedule)}>キャンセル</button>
+          <button type="button" className="secondary-button" disabled={saving} onClick={() => setDraft(schedule)}>キャンセル</button>
         ) : (
-          <button type="button" className="danger-button" disabled={!canEdit} onClick={() => onDelete(draft.id)}>
+          <button type="button" className="danger-button" disabled={!canEdit || saving} onClick={() => onDelete(draft.id)}>
             <Trash2 size={16} />
             削除
           </button>
         )}
-        <button type="button" className="secondary-button" disabled={!canEdit} onClick={() => onDuplicate(draft)}>
+        <button type="button" className="secondary-button" disabled={!canEdit || saving} onClick={() => onDuplicate(draft)}>
           <Copy size={16} />
           複製
         </button>
-        <button type="button" className="secondary-button" onClick={onMarkAsRead}>既読</button>
-        <button type="button" className="primary-button" disabled={!canEdit} onClick={() => onSave(draft)}>保存</button>
+        {!isReadByCurrentUser && <button type="button" className="secondary-button" disabled={saving} onClick={onMarkAsRead}>既読</button>}
+        <button type="button" className="primary-button" disabled={!canEdit || saving} onClick={() => void handleSave()}>{saving ? "保存中" : "保存"}</button>
       </div>
     </form>
   );
@@ -300,10 +458,63 @@ function Field({ label, value, disabled, onChange }: { label: string; value: str
   );
 }
 
+function AddressField({
+  value,
+  candidates,
+  disabled,
+  onChange,
+}: {
+  value: string;
+  candidates: string[];
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const normalizedValue = value.trim().toLowerCase();
+  const filteredCandidates = candidates
+    .filter((candidate) => {
+      if (!normalizedValue) return true;
+      return candidate.toLowerCase().includes(normalizedValue);
+    })
+    .slice(0, 8);
+
+  function selectAddress(address: string) {
+    onChange(address);
+    setOpen(false);
+  }
+
+  return (
+    <label className="field address-field">
+      <span>住所</span>
+      <input
+        value={value}
+        disabled={disabled}
+        autoComplete="off"
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        onChange={(event) => {
+          onChange(event.target.value);
+          setOpen(true);
+        }}
+      />
+      {open && !disabled && filteredCandidates.length > 0 && (
+        <div className="address-suggestion-list">
+          {filteredCandidates.map((address) => (
+            <button type="button" key={address} onMouseDown={(event) => event.preventDefault()} onClick={() => selectAddress(address)}>
+              {address}
+            </button>
+          ))}
+        </div>
+      )}
+    </label>
+  );
+}
+
 type DatePart = "year" | "month" | "day";
 
 function DateField({ label, value, disabled, onChange }: { label: string; value: string; disabled?: boolean; onChange: (value: string) => void }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedPart, setSelectedPart] = useState<DatePart>("year");
   const [editing, setEditing] = useState(false);
   const [digitBuffer, setDigitBuffer] = useState("");
@@ -316,7 +527,6 @@ function DateField({ label, value, disabled, onChange }: { label: string; value:
     setEditing(true);
     setSelectedPart(part);
     setDigitBuffer("");
-    requestAnimationFrame(() => buttonRef.current?.focus());
   }
 
   function finishEditing() {
@@ -379,11 +589,12 @@ function DateField({ label, value, disabled, onChange }: { label: string; value:
     onChange(formatDateParts(currentDate.getFullYear(), currentDate.getMonth() + 1, currentDate.getDate()));
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (disabled) return;
     if (!editing) startEditing(selectedPart);
 
     if (/^\d$/.test(event.key)) {
+      if (event.currentTarget === keyboardInputRef.current) return;
       event.preventDefault();
       handleDigit(event.key);
       return;
@@ -420,9 +631,39 @@ function DateField({ label, value, disabled, onChange }: { label: string; value:
     }
   }
 
+  function handleTextInput(text: string) {
+    const digits = text.replace(/\D/g, "");
+    if (!digits) return;
+    digits.split("").forEach(handleDigit);
+    if (keyboardInputRef.current) keyboardInputRef.current.value = "";
+  }
+
   return (
     <label className="field date-field">
       <span>{label}</span>
+      <input
+        ref={keyboardInputRef}
+        className="date-keyboard-input"
+        type="tel"
+        defaultValue=""
+        inputMode="numeric"
+        pattern="[0-9]*"
+        disabled={disabled}
+        aria-label={`${label}を数字入力`}
+        autoComplete="off"
+        onFocus={() => startEditing(selectedPart)}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          const offset = event.clientX - rect.left;
+          const nextPart = offset < rect.width / 3 ? "year" : offset < (rect.width * 2) / 3 ? "month" : "day";
+          startEditing(nextPart);
+        }}
+        onInput={(event) => {
+          handleTextInput(event.currentTarget.value);
+        }}
+        onBlur={finishEditing}
+        onKeyDown={handleKeyDown}
+      />
       <button
         ref={buttonRef}
         type="button"
@@ -446,6 +687,7 @@ function DateField({ label, value, disabled, onChange }: { label: string; value:
 
 function TimeField({ label, value, disabled, onChange }: { label: string; value: string; disabled?: boolean; onChange: (value: string) => void }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const keyboardInputRef = useRef<HTMLInputElement | null>(null);
   const [selectedPart, setSelectedPart] = useState<"hour" | "minute">("hour");
   const [editing, setEditing] = useState(false);
   const [digitBuffer, setDigitBuffer] = useState("");
@@ -464,7 +706,6 @@ function TimeField({ label, value, disabled, onChange }: { label: string; value:
     setEditing(true);
     setSelectedPart(part);
     setDigitBuffer("");
-    requestAnimationFrame(() => buttonRef.current?.focus());
   }
 
   function finishEditing() {
@@ -522,11 +763,12 @@ function TimeField({ label, value, disabled, onChange }: { label: string; value:
     updatePart("hour", 0);
   }
 
-  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+  function handleKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (disabled) return;
     if (!editing) startEditing(selectedPart);
 
     if (/^\d$/.test(event.key)) {
+      if (event.currentTarget === keyboardInputRef.current) return;
       event.preventDefault();
       handleDigit(event.key);
       return;
@@ -574,9 +816,37 @@ function TimeField({ label, value, disabled, onChange }: { label: string; value:
     }
   }
 
+  function handleTextInput(text: string) {
+    const digits = text.replace(/\D/g, "");
+    if (!digits) return;
+    digits.split("").forEach(handleDigit);
+    if (keyboardInputRef.current) keyboardInputRef.current.value = "";
+  }
+
   return (
     <label className="field time-field">
       <span>{label}</span>
+      <input
+        ref={keyboardInputRef}
+        className="time-keyboard-input"
+        type="tel"
+        defaultValue=""
+        inputMode="numeric"
+        pattern="[0-9]*"
+        disabled={disabled}
+        aria-label={`${label}を数字入力`}
+        autoComplete="off"
+        onFocus={() => startEditing(selectedPart)}
+        onClick={(event) => {
+          const rect = event.currentTarget.getBoundingClientRect();
+          startEditing(event.clientX - rect.left < rect.width / 2 ? "hour" : "minute");
+        }}
+        onInput={(event) => {
+          handleTextInput(event.currentTarget.value);
+        }}
+        onBlur={finishEditing}
+        onKeyDown={handleKeyDown}
+      />
       <button
         ref={buttonRef}
         type="button"
@@ -677,8 +947,35 @@ function splitMembers(value: string) {
     .filter(Boolean);
 }
 
+function uniqueMembers(members: string[]) {
+  return [...new Set(members.map((member) => member.trim()).filter(Boolean))];
+}
+
 function getTextareaRows(value: string) {
   return Math.min(12, Math.max(3, value.split("\n").length));
+}
+
+function readMemoImage(file: File): Promise<MemoImage> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      resolve({
+        id: createMemoImageId(),
+        name: file.name,
+        type: file.type,
+        dataUrl: String(reader.result),
+        createdAt: new Date().toISOString(),
+      });
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function createMemoImageId() {
+  return typeof crypto !== "undefined" && "randomUUID" in crypto
+    ? crypto.randomUUID()
+    : `memo-image-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function getScheduleTagColors(schedule: Schedule) {

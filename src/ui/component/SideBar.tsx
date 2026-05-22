@@ -1,5 +1,5 @@
 import type { PointerEvent as ReactPointerEvent } from "react";
-import type { Schedule, SidebarMode, Tag, UserRole } from "../../types";
+import type { MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { AdminSidebarContent } from "../ForAdmin/AdminSidebarContent";
 import { GuestSidebarContent } from "../ForGuest/GuestSidebarContent";
 import { UserSidebarContent } from "../ForUser/UserSidebarContent";
@@ -9,17 +9,21 @@ type SideBarProps = {
   role: UserRole;
   mode: SidebarMode;
   selectedSchedule: Schedule | null;
+  currentUserName: string;
   overlapList: Schedule[];
   tags: Tag[];
+  addressCandidates: string[];
   groupMembers: string[];
   groupMembersError: string;
   onModeChange: (mode: SidebarMode) => void;
   onSelectSchedule: (schedule: Schedule) => void;
-  onSaveSchedule: (schedule: Schedule) => void;
+  onSaveSchedule: (schedule: Schedule) => Promise<void>;
+  onUploadMemoImage: (file: File, onProgress: (progress: number) => void) => Promise<MemoImage>;
   onDeleteSchedule: (scheduleId: string) => void;
   onDuplicateSchedule: (schedule: Schedule) => void;
   onMarkAsRead: () => void;
   onAddTag: () => void;
+  onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onOpenTagContextMenu: (tag: Tag, x: number, y: number) => void;
   onStartResize: (event: ReactPointerEvent<HTMLButtonElement>) => void;
   onDirtyChange: (isDirty: boolean) => void;
@@ -30,17 +34,21 @@ export function SideBar({
   role,
   mode,
   selectedSchedule,
+  currentUserName,
   overlapList,
   tags,
+  addressCandidates,
   groupMembers,
   groupMembersError,
   onModeChange,
   onSelectSchedule,
   onSaveSchedule,
+  onUploadMemoImage,
   onDeleteSchedule,
   onDuplicateSchedule,
   onMarkAsRead,
   onAddTag,
+  onUpdateTag,
   onOpenTagContextMenu,
   onStartResize,
   onDirtyChange,
@@ -62,21 +70,25 @@ export function SideBar({
           mode={mode}
           role={role}
           selectedSchedule={selectedSchedule}
+          currentUserName={currentUserName}
           tags={tags}
+          addressCandidates={addressCandidates}
           groupMembers={groupMembers}
           groupMembersError={groupMembersError}
           onSaveSchedule={onSaveSchedule}
+          onUploadMemoImage={onUploadMemoImage}
           onDeleteSchedule={onDeleteSchedule}
           onDuplicateSchedule={onDuplicateSchedule}
           onMarkAsRead={onMarkAsRead}
           onAddTag={onAddTag}
+          onUpdateTag={onUpdateTag}
           onOpenTagContextMenu={onOpenTagContextMenu}
           onDirtyChange={onDirtyChange}
         />
       ) : role === "User" ? (
-        <UserSidebarContent selectedSchedule={selectedSchedule} onMarkAsRead={onMarkAsRead} />
+        <UserSidebarContent selectedSchedule={selectedSchedule} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
       ) : (
-        <GuestSidebarContent selectedSchedule={selectedSchedule} onMarkAsRead={onMarkAsRead} />
+        <GuestSidebarContent selectedSchedule={selectedSchedule} currentUserName={currentUserName} onMarkAsRead={onMarkAsRead} />
       )}
     </aside>
   );

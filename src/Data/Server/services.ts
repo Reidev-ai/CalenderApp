@@ -213,7 +213,7 @@ export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
 
 export function filterSchedulesForUser(schedules: Schedule[], actor: ServerUser, query: URLSearchParams) {
   const scopedSchedules = schedules.filter((schedule) => {
-    if (schedule.groupId && schedule.groupId !== actor.groupId) return false;
+    if (schedule.groupId !== actor.groupId) return false;
     if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
     if (actor.role === "Admin") return true;
     return schedule.members.includes(actor.name);
@@ -272,7 +272,7 @@ export function restoreSchedule(data: Database, scheduleId: string) {
 export function markScheduleRead(data: Database, scheduleId: string, member: string, actor?: ServerUser) {
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
-  if (actor && schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (actor && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
   if (!schedule.readBy.includes(member)) schedule.readBy.push(member);
   return schedule;
 }
@@ -280,7 +280,7 @@ export function markScheduleRead(data: Database, scheduleId: string, member: str
 export function markScheduleChangeRead(data: Database, scheduleId: string, userId: string, actor?: ServerUser) {
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
-  if (actor && schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (actor && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
   schedule.changeReadBy = [...new Set([...(schedule.changeReadBy ?? []), userId])];
   return schedule;
 }
@@ -340,6 +340,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     contractor: input.contractor ?? "",
     address: input.address ?? "",
     memo: input.memo ?? "",
+    memoImages: input.memoImages ?? [],
     tagColor: input.tagColor ?? input.tagColors?.[0] ?? "#3b82f6",
     tagColors: input.tagColors ?? [input.tagColor ?? "#3b82f6"],
     readBy: input.readBy ?? [],
@@ -362,7 +363,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
 }
 
 function assertCanWriteSchedule(schedule: Schedule, actor: ServerUser) {
-  if (schedule.groupId && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
   if (actor.role === "Admin" && !schedule.isPersonal) return;
   if (actor.role === "User" && schedule.isPersonal && schedule.ownerUserId === actor.id) return;
   throw new HttpError(403, "権限がありません");
