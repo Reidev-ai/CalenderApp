@@ -2,4 +2,6 @@ node_modules/
 dist/
 .DS_Store
 *.tsbuildinfo
-./src/Data/data/memo-images/
+src/Data/data/memo-images/
+src/Data/data/logs/
+src/Data/data/db.json
