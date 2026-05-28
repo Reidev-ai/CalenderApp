@@ -20,17 +20,21 @@ CALENDAR_DATA_DIR=/var/lib/calendar LOG_FILE=/var/log/calendar/app.log npm run s
 ```
 
 本番公開時は、許可するフロントのURLを `CALENDAR_ALLOWED_ORIGINS` で固定してください。
-新規登録を止めたい場合は `CALENDAR_REGISTRATION_ENABLED=0` を指定します。
+`NODE_ENV=production` では `CALENDAR_ALLOWED_ORIGINS` 未設定のCORS許可は出しません。
 リバースプロキシ配下で実IPを `X-Forwarded-For` から見る場合だけ `CALENDAR_TRUST_PROXY=1` を指定してください。
 
 ```sh
+NODE_ENV=production \
 CALENDAR_ALLOWED_ORIGINS=https://example.com \
-CALENDAR_REGISTRATION_ENABLED=0 \
 CALENDAR_TRUST_PROXY=1 \
 CALENDAR_DATA_DIR=/var/lib/calendar \
 LOG_FILE=/var/log/calendar/app.log \
 npm run server:dev
 ```
+
+本番起動設定の雛形は `src/Data/Server/deploy/` にあります。
+`production.env.example` をプロジェクト外へコピーして値を埋め、`start-production.sh` に渡して起動してください。
+nginxでHTTPS終端する場合は `nginx-calendar.example.conf` をベースにできます。
 
 個別にDBファイルを指定する場合は `DATABASE_PATH` を使えます。
 
@@ -55,6 +59,12 @@ VITE_API_BASE_URL=http://<tailscale-ip-or-name>:8787 npm run dev -- --host 0.0.0
 
 ```sh
 npm run server:check
+```
+
+権限まわりのAPIテストは、一時DBでAPIサーバーを起動して確認します。
+
+```sh
+npm run test:api-authz
 ```
 
 ## バックアップ

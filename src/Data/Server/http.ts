@@ -102,6 +102,7 @@ function getAllowedOrigin(origin?: string) {
   if (configuredOrigins.length > 0) {
     return configuredOrigins.includes(origin) ? origin : undefined;
   }
+  if (process.env.NODE_ENV === "production") return undefined;
 
   return defaultAllowedOriginPatterns.some((pattern) => pattern.test(origin)) ? origin : undefined;
 }

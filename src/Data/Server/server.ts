@@ -5,10 +5,11 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { extname, join } from "node:path";
 import { createRequestId, logError, logInfo, logWarn } from "./logger.ts";
 import { SqliteStore } from "./store.ts";
-import type { LoginBody, MemberPatch, RegisterBody, SchedulePatch } from "./domain.ts";
+import type { Database, LoginBody, MemberPatch, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
 import { buildCorsHeaders, HttpError, notFound, parseJsonBody, sendJson, sendNoContent } from "./http.ts";
 import {
   approveJoinRequest,
+  canReadSchedule,
   createSchedule,
   createTag,
   deleteTag,
@@ -66,6 +67,8 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     const memoImageReadMatch = pathname.match(/^\/api\/memo-images\/([^/]+)$/);
     if (method === "GET" && memoImageReadMatch) {
       const actor = await authenticate(req);
+      const data = await store.read();
+      assertCanReadMemoImage(data, actor, memoImageReadMatch[1]);
       await sendMemoImage(req, res, actor.groupId, memoImageReadMatch[1]);
       await logInfo("request", { requestId, method, pathname, status: 200, durationMs: Date.now() - startedAt });
       return;
@@ -106,7 +109,6 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "POST" && pathname === "/api/auth/register") {
-    if (process.env.CALENDAR_REGISTRATION_ENABLED === "0") throw new HttpError(403, "現在、登録は停止されています");
     const rateLimitKey = getClientIp(req);
     assertRegisterAllowed(rateLimitKey);
     recordRegisterAttempt(rateLimitKey);
@@ -369,6 +371,17 @@ async function saveMemoImage(groupId: string, body: { name?: string; type?: stri
     url: `/api/memo-images/${id}`,
     createdAt: new Date().toISOString(),
   };
+}
+
+function assertCanReadMemoImage(data: Database, actor: ServerUser, imageId: string) {
+  const imageUrl = `/api/memo-images/${imageId}`;
+  const schedules = [...data.schedules, ...data.trashSchedules];
+  const hasReadableImage = schedules.some((schedule) => (
+    canReadSchedule(schedule, actor)
+    && (schedule.memoImages ?? []).some((image) => image.id === imageId || image.url === imageUrl)
+  ));
+
+  if (!hasReadableImage) throw new HttpError(404, "画像が見つかりません");
 }
 
 async function sendMemoImage(req: IncomingMessage, res: ServerResponse, groupId: string, id: string) {

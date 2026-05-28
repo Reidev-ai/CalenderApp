@@ -1,5 +1,5 @@
 import crypto, { createHash, randomUUID } from "node:crypto";
-import type { Schedule, Tag, UserRole } from "../../types.ts";
+import type { MemoImage, Schedule, Tag, UserRole } from "../../types.ts";
 import type { Database, LoginBody, MemberPatch, PublicUser, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
 import { HttpError } from "./http.ts";
 
@@ -388,7 +388,7 @@ function normalizeSchedule(input: SchedulePatch): Schedule {
     contractor: input.contractor ?? "",
     address: input.address ?? "",
     memo: input.memo ?? "",
-    memoImages: input.memoImages ?? [],
+    memoImages: normalizeMemoImages(input.memoImages),
     tagColor: input.tagColor ?? input.tagColors?.[0] ?? "#3b82f6",
     tagColors: input.tagColors ?? [input.tagColor ?? "#3b82f6"],
     readBy: input.readBy ?? [],
@@ -418,11 +418,21 @@ function assertCanWriteSchedule(schedule: Schedule, actor: ServerUser) {
   throw new HttpError(403, "権限がありません");
 }
 
-function canReadSchedule(schedule: Schedule, actor: ServerUser) {
+export function canReadSchedule(schedule: Schedule, actor: ServerUser) {
   if (schedule.groupId !== actor.groupId) return false;
   if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
   if (actor.role === "Admin") return true;
   return (schedule.memberIds ?? []).includes(actor.id) || schedule.members.includes(actor.name);
+}
+
+function normalizeMemoImages(images: MemoImage[] = []) {
+  return images.map((image) => ({
+    id: image.id,
+    name: image.name,
+    type: image.type,
+    url: image.url ?? `/api/memo-images/${image.id}`,
+    createdAt: image.createdAt,
+  }));
 }
 
 function normalizeTimeString(time: string) {

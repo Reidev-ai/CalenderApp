@@ -407,6 +407,7 @@ export default function App() {
       ...schedule,
       groupId: schedule.groupId ?? authSession?.user.groupId,
       ownerUserId: schedule.ownerUserId ?? (schedule.isPersonal ? authSession?.user.id : undefined),
+      memoImages: stripMemoImageDataUrls(schedule.memoImages),
       isPersonal: role === "User" ? true : schedule.isPersonal,
     });
     const exists = schedules.some((item) => item.id === normalizedSchedule.id);
@@ -448,7 +449,7 @@ export default function App() {
       (progress) => onProgress(35 + progress * 0.65),
     );
     onProgress(100);
-    return payload.image;
+    return { ...payload.image, dataUrl };
   }
 
   async function deleteSchedule(scheduleId: string) {
@@ -1654,6 +1655,10 @@ function readFileAsDataUrl(file: File, onProgress?: (progress: number) => void) 
     };
     reader.readAsDataURL(file);
   });
+}
+
+function stripMemoImageDataUrls(images: MemoImage[] | undefined) {
+  return images?.map(({ dataUrl: _dataUrl, ...image }) => image);
 }
 
 function saveOfflineCache(groupId: string, schedules: Schedule[], trashSchedules: Schedule[], tags: Tag[]) {
