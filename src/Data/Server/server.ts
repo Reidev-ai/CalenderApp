@@ -84,22 +84,23 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       return;
     }
 
-    console.error(error);
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
     await logError("unhandled_error", {
       requestId,
       method,
       pathname,
       status: 500,
       durationMs: Date.now() - startedAt,
-      error: error instanceof Error ? error.message : String(error),
-      stack: error instanceof Error ? error.stack : undefined,
+      error: errorMessage,
+      stack: errorStack,
     });
     sendJson(res, 500, { error: "Internal server error" }, req.headers.origin);
   }
 });
 
 server.listen(port, host, () => {
-  console.log(`Calendar API listening on http://${host}:${port}`);
+  console.info("[Server.listen] Calendar API listening", { host, port });
   void logInfo("server_started", { host, port });
 });
 
