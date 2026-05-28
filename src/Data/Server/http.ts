@@ -1,5 +1,15 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 
+const defaultAllowedOriginPatterns = [
+  /^http:\/\/localhost(?::\d+)?$/,
+  /^http:\/\/127\.0\.0\.1(?::\d+)?$/,
+  /^http:\/\/0\.0\.0\.0(?::\d+)?$/,
+  /^http:\/\/10\.\d+\.\d+\.\d+(?::\d+)?$/,
+  /^http:\/\/192\.168\.\d+\.\d+(?::\d+)?$/,
+  /^http:\/\/172\.(1[6-9]|2\d|3[0-1])\.\d+\.\d+(?::\d+)?$/,
+  /^http:\/\/100\.\d+\.\d+\.\d+(?::\d+)?$/,
+];
+
 export type RequestContext = {
   req: IncomingMessage;
   res: ServerResponse;
@@ -17,11 +27,17 @@ export class HttpError extends Error {
   }
 }
 
-export async function parseJsonBody<T>(req: IncomingMessage): Promise<T> {
+export async function parseJsonBody<T>(req: IncomingMessage, options: { maxBytes?: number } = {}): Promise<T> {
   const chunks: Uint8Array[] = [];
+  let size = 0;
 
   for await (const chunk of req) {
-    chunks.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
+    const bytes = typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk;
+    size += bytes.byteLength;
+    if (options.maxBytes !== undefined && size > options.maxBytes) {
+      throw new HttpError(413, "Request body is too large");
+    }
+    chunks.push(bytes);
   }
 
   if (chunks.length === 0) return {} as T;
@@ -36,21 +52,17 @@ export async function parseJsonBody<T>(req: IncomingMessage): Promise<T> {
   }
 }
 
-export function sendJson(res: ServerResponse, status: number, payload: unknown) {
+export function sendJson(res: ServerResponse, status: number, payload: unknown, origin?: string | string[]) {
   res.writeHead(status, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    ...buildCorsHeaders(origin),
     "Content-Type": "application/json; charset=utf-8",
   });
   res.end(JSON.stringify(payload));
 }
 
-export function sendNoContent(res: ServerResponse) {
+export function sendNoContent(res: ServerResponse, origin?: string | string[]) {
   res.writeHead(204, {
-    "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    ...buildCorsHeaders(origin),
   });
   res.end();
 }
@@ -70,4 +82,33 @@ function concatChunks(chunks: Uint8Array[]) {
   }
 
   return result;
+}
+
+export function buildCorsHeaders(origin?: string | string[]) {
+  const allowedOrigin = getAllowedOrigin(Array.isArray(origin) ? origin[0] : origin);
+  const headers: Record<string, string> = {
+    "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization",
+    "Vary": "Origin",
+  };
+
+  if (allowedOrigin) headers["Access-Control-Allow-Origin"] = allowedOrigin;
+  return headers;
+}
+
+function getAllowedOrigin(origin?: string) {
+  if (!origin) return undefined;
+  const configuredOrigins = getConfiguredOrigins();
+  if (configuredOrigins.length > 0) {
+    return configuredOrigins.includes(origin) ? origin : undefined;
+  }
+
+  return defaultAllowedOriginPatterns.some((pattern) => pattern.test(origin)) ? origin : undefined;
+}
+
+function getConfiguredOrigins() {
+  return (process.env.CALENDAR_ALLOWED_ORIGINS ?? "")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
 }

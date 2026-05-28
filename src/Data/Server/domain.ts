@@ -29,6 +29,7 @@ export type Session = {
   token: string;
   userId: string;
   createdAt: string;
+  expiresAt?: string;
 };
 
 export type Database = {

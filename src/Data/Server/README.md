@@ -1,7 +1,7 @@
 # Calendar API
 
 Node標準HTTPだけで動くバックエンドです。データはSQLiteの `src/Data/data/calendar.sqlite` に保存します。
-初回起動時に既存の `src/Data/data/db.json` があれば取り込みます。
+初回起動時は空のDBを作成します。開発用シードを取り込む場合だけ `CALENDAR_SEED_DATA=1` を指定します。
 ログは既定で `src/Data/data/logs/app.log` にJSON Lines形式で保存します。
 APIアクセス、HTTPエラー、未処理エラー、ブラウザから送信されたクライアントエラーを記録します。
 
@@ -13,9 +13,23 @@ npm run server:dev
 
 既定URLは `http://127.0.0.1:8787` です。
 本番や常時運用では、データ保存先をプロジェクト外に置くことを推奨します。
+Webサーバーで公開するのはフロントの `dist/` だけにしてください。`src/Data/data/`、SQLite、ログ、バックアップ、サーバーコードはWeb公開ディレクトリに置かないでください。
 
 ```sh
 CALENDAR_DATA_DIR=/var/lib/calendar LOG_FILE=/var/log/calendar/app.log npm run server:dev
+```
+
+本番公開時は、許可するフロントのURLを `CALENDAR_ALLOWED_ORIGINS` で固定してください。
+新規登録を止めたい場合は `CALENDAR_REGISTRATION_ENABLED=0` を指定します。
+リバースプロキシ配下で実IPを `X-Forwarded-For` から見る場合だけ `CALENDAR_TRUST_PROXY=1` を指定してください。
+
+```sh
+CALENDAR_ALLOWED_ORIGINS=https://example.com \
+CALENDAR_REGISTRATION_ENABLED=0 \
+CALENDAR_TRUST_PROXY=1 \
+CALENDAR_DATA_DIR=/var/lib/calendar \
+LOG_FILE=/var/log/calendar/app.log \
+npm run server:dev
 ```
 
 個別にDBファイルを指定する場合は `DATABASE_PATH` を使えます。
@@ -41,6 +55,46 @@ VITE_API_BASE_URL=http://<tailscale-ip-or-name>:8787 npm run dev -- --host 0.0.0
 
 ```sh
 npm run server:check
+```
+
+## バックアップ
+
+SQLiteの `.backup` を使ってDBを一貫コピーし、`memo-images` と `logs` も同じバックアップフォルダにコピーします。
+
+```sh
+npm run backup:data
+```
+
+既定の出力先は `src/Data/data/backups/<timestamp>/` です。
+本番ではデータ保存先・バックアップ先をプロジェクト外に置くことを推奨します。
+
+```sh
+CALENDAR_DATA_DIR=/var/lib/calendar CALENDAR_BACKUP_DIR=/var/backups/calendar npm run backup:data
+```
+
+個別DBを使っている場合はサーバー起動時と同じ `DATABASE_PATH` を指定してください。
+
+```sh
+DATABASE_PATH=/var/lib/calendar/calendar.sqlite CALENDAR_BACKUP_DIR=/var/backups/calendar npm run backup:data
+```
+
+定期バックアップ用の常駐プログラムもありますが、既定では無効です。
+未公開・開発中は次のコマンドを実行してもバックアップは作られず、そのまま終了します。
+
+```sh
+npm run backup:schedule
+```
+
+本番公開後に有効化する場合だけ `CALENDAR_BACKUP_ENABLED=1` を付けます。
+既定間隔は24時間です。起動直後にも1回作りたい場合は `CALENDAR_BACKUP_RUN_ON_START=1` を付けます。
+
+```sh
+CALENDAR_BACKUP_ENABLED=1 \
+CALENDAR_BACKUP_INTERVAL_MINUTES=1440 \
+CALENDAR_BACKUP_RUN_ON_START=1 \
+CALENDAR_DATA_DIR=/var/lib/calendar \
+CALENDAR_BACKUP_DIR=/var/backups/calendar \
+npm run backup:schedule
 ```
 
 ## 主なAPI

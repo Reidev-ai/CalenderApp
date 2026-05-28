@@ -6,7 +6,7 @@ import { extname, join } from "node:path";
 import { createRequestId, logError, logInfo, logWarn } from "./logger.ts";
 import { SqliteStore } from "./store.ts";
 import type { LoginBody, MemberPatch, RegisterBody, SchedulePatch } from "./domain.ts";
-import { HttpError, notFound, parseJsonBody, sendJson, sendNoContent } from "./http.ts";
+import { buildCorsHeaders, HttpError, notFound, parseJsonBody, sendJson, sendNoContent } from "./http.ts";
 import {
   approveJoinRequest,
   createSchedule,
@@ -15,9 +15,11 @@ import {
   filterSchedules,
   filterSchedulesForUser,
   getSessionUser,
+  listTags,
   listGroupMembers,
   listJoinRequests,
   loginUser,
+  logoutSession,
   markScheduleRead,
   markScheduleChangeRead,
   moveScheduleToTrash,
@@ -33,6 +35,18 @@ import {
 const store = new SqliteStore();
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? "127.0.0.1";
+const defaultJsonBodyMaxBytes = Number(process.env.CALENDAR_JSON_BODY_MAX_BYTES ?? 1024 * 1024);
+const memoImageBodyMaxBytes = Number(process.env.CALENDAR_MEMO_IMAGE_BODY_MAX_BYTES ?? 14 * 1024 * 1024);
+const memoImageMaxBytes = Number(process.env.CALENDAR_MEMO_IMAGE_MAX_BYTES ?? 10 * 1024 * 1024);
+const loginWindowMs = 10 * 60 * 1000;
+const loginMaxFailures = 5;
+const loginBlockMs = 5 * 60 * 1000;
+const loginAttempts = new Map<string, { failures: number; firstFailedAt: number; blockedUntil?: number }>();
+const registerWindowMs = 60 * 60 * 1000;
+const registerMaxAttempts = 10;
+const registerBlockMs = 60 * 60 * 1000;
+const registerAttempts = new Map<string, { attempts: number; firstAttemptAt: number; blockedUntil?: number }>();
+const allowedImageTypes = new Set(["image/jpeg", "image/png", "image/gif", "image/webp", "image/heic"]);
 
 const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
   const requestId = createRequestId();
@@ -42,7 +56,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
 
   try {
     if (req.method === "OPTIONS") {
-      sendNoContent(res);
+      sendNoContent(res, req.headers.origin);
       await logInfo("request", { requestId, method, pathname, status: 204, durationMs: Date.now() - startedAt });
       return;
     }
@@ -52,17 +66,17 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
     const memoImageReadMatch = pathname.match(/^\/api\/memo-images\/([^/]+)$/);
     if (method === "GET" && memoImageReadMatch) {
       const actor = await authenticate(req);
-      await sendMemoImage(res, actor.groupId, memoImageReadMatch[1]);
+      await sendMemoImage(req, res, actor.groupId, memoImageReadMatch[1]);
       await logInfo("request", { requestId, method, pathname, status: 200, durationMs: Date.now() - startedAt });
       return;
     }
 
     const payload = await route(method, url.pathname, url.searchParams, req);
-    sendJson(res, payload.status, payload.body);
+    sendJson(res, payload.status, payload.body, req.headers.origin);
     await logInfo("request", { requestId, method, pathname, status: payload.status, durationMs: Date.now() - startedAt });
   } catch (error) {
     if (error instanceof HttpError) {
-      sendJson(res, error.status, { error: error.message });
+      sendJson(res, error.status, { error: error.message }, req.headers.origin);
       await logWarn("http_error", { requestId, method, pathname, status: error.status, durationMs: Date.now() - startedAt, error: error.message });
       return;
     }
@@ -77,7 +91,7 @@ const server = createServer(async (req: IncomingMessage, res: ServerResponse) =>
       error: error instanceof Error ? error.message : String(error),
       stack: error instanceof Error ? error.stack : undefined,
     });
-    sendJson(res, 500, { error: "Internal server error" });
+    sendJson(res, 500, { error: "Internal server error" }, req.headers.origin);
   }
 });
 
@@ -92,7 +106,11 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "POST" && pathname === "/api/auth/register") {
-    const body = await parseJsonBody<RegisterBody>(req);
+    if (process.env.CALENDAR_REGISTRATION_ENABLED === "0") throw new HttpError(403, "現在、登録は停止されています");
+    const rateLimitKey = getClientIp(req);
+    assertRegisterAllowed(rateLimitKey);
+    recordRegisterAttempt(rateLimitKey);
+    const body = await parseJsonBody<RegisterBody>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let response: { status: number } & Record<string, unknown> = { status: 201 };
     await store.update((data) => {
       response = registerUser(data, body);
@@ -102,17 +120,29 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "POST" && pathname === "/api/auth/login") {
-    const body = await parseJsonBody<LoginBody>(req);
+    const body = await parseJsonBody<LoginBody>(req, { maxBytes: defaultJsonBodyMaxBytes });
+    const rateLimitKey = getLoginRateLimitKey(req, body.email);
+    assertLoginAllowed(rateLimitKey);
     let response: unknown;
-    await store.update((data) => {
-      response = loginUser(data, body);
-    });
+    try {
+      await store.update((data) => {
+        response = loginUser(data, body);
+      });
+      clearLoginFailures(rateLimitKey);
+    } catch (error) {
+      recordLoginFailure(rateLimitKey);
+      throw error;
+    }
     return ok(response);
   }
 
+  const actor = await authenticate(req);
+
   if (method === "POST" && pathname === "/api/client-logs") {
-    const body = await parseJsonBody<Record<string, unknown>>(req);
+    const body = await parseJsonBody<Record<string, unknown>>(req, { maxBytes: defaultJsonBodyMaxBytes });
     await logWarn("client_log", {
+      userId: actor.id,
+      groupId: actor.groupId,
       level: body.level,
       message: body.message,
       stack: body.stack,
@@ -122,14 +152,21 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     return { status: 202, body: { ok: true } };
   }
 
-  const actor = await authenticate(req);
+  if (method === "POST" && pathname === "/api/auth/logout") {
+    const token = getBearerToken(req);
+    let response: unknown;
+    await store.update((data) => {
+      response = logoutSession(data, token);
+    });
+    return ok(response);
+  }
 
   if (method === "GET" && pathname === "/api/auth/me") {
     return ok({ user: publicUser(actor) });
   }
 
   if (method === "POST" && pathname === "/api/memo-images") {
-    const body = await parseJsonBody<{ name?: string; type?: string; dataUrl?: string }>(req);
+    const body = await parseJsonBody<{ name?: string; type?: string; dataUrl?: string }>(req, { maxBytes: memoImageBodyMaxBytes });
     return created({ image: await saveMemoImage(actor.groupId, body) });
   }
 
@@ -148,7 +185,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   const groupMemberMatch = pathname.match(/^\/api\/groups\/([^/]+)\/members\/([^/]+)$/);
   if (method === "PATCH" && groupMemberMatch) {
     if (actor.role !== "Admin" || groupMemberMatch[1] !== actor.groupId) throw new HttpError(403, "権限がありません");
-    const body = await parseJsonBody<MemberPatch>(req);
+    const body = await parseJsonBody<MemberPatch>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let response: unknown;
     await store.update((data) => {
       response = updateGroupMember(data, groupMemberMatch[1], groupMemberMatch[2], body);
@@ -179,7 +216,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let response: unknown;
     await store.update((data) => {
-      response = approveJoinRequest(data, approveMatch[1]);
+      response = approveJoinRequest(data, approveMatch[1], actor);
     });
     return ok(response);
   }
@@ -190,7 +227,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   }
 
   if (method === "POST" && pathname === "/api/schedules") {
-    const body = await parseJsonBody<SchedulePatch>(req);
+    const body = await parseJsonBody<SchedulePatch>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let schedule: unknown;
     await store.update((data) => {
       schedule = createSchedule(data, body, actor);
@@ -200,7 +237,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   const scheduleMatch = pathname.match(/^\/api\/schedules\/([^/]+)$/);
   if (scheduleMatch && method === "PUT") {
-    const body = await parseJsonBody<SchedulePatch>(req);
+    const body = await parseJsonBody<SchedulePatch>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let schedule: unknown;
     await store.update((data) => {
       schedule = updateSchedule(data, scheduleMatch[1], body, actor);
@@ -218,7 +255,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   const readMatch = pathname.match(/^\/api\/schedules\/([^/]+)\/read$/);
   if (readMatch && method === "POST") {
-    const body = await parseJsonBody<{ member?: string }>(req);
+    const body = await parseJsonBody<{ member?: string }>(req, { maxBytes: defaultJsonBodyMaxBytes });
     if (!body.member) throw new HttpError(400, "member is required");
     const member = body.member;
     let schedule: unknown;
@@ -248,22 +285,25 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let schedule: unknown;
     await store.update((data) => {
-      schedule = restoreSchedule(data, restoreMatch[1]);
+      schedule = restoreSchedule(data, restoreMatch[1], actor);
     });
     return ok({ schedule });
   }
 
   if (method === "GET" && pathname === "/api/tags") {
-    const data = await store.read();
-    return ok({ tags: data.tags });
+    let tags: unknown;
+    await store.update((data) => {
+      tags = listTags(data, actor.groupId);
+    });
+    return ok({ tags });
   }
 
   if (method === "POST" && pathname === "/api/tags") {
     if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
-    const body = await parseJsonBody<Record<string, string>>(req);
+    const body = await parseJsonBody<Record<string, string>>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let tag: unknown;
     await store.update((data) => {
-      tag = createTag(data, body);
+      tag = createTag(data, body, actor.groupId);
     });
     return created({ tag });
   }
@@ -271,10 +311,10 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
   const tagMatch = pathname.match(/^\/api\/tags\/([^/]+)$/);
   if (tagMatch && method === "PATCH") {
     if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
-    const body = await parseJsonBody<Record<string, string>>(req);
+    const body = await parseJsonBody<Record<string, string>>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let tag: unknown;
     await store.update((data) => {
-      tag = updateTag(data, tagMatch[1], body);
+      tag = updateTag(data, tagMatch[1], body, actor.groupId);
     });
     return ok({ tag });
   }
@@ -283,7 +323,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
     if (actor.role !== "Admin") throw new HttpError(403, "権限がありません");
     let tag: unknown;
     await store.update((data) => {
-      tag = deleteTag(data, tagMatch[1]);
+      tag = deleteTag(data, tagMatch[1], actor.groupId);
     });
     return ok({ tag });
   }
@@ -292,9 +332,7 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 }
 
 async function authenticate(req: IncomingMessage) {
-  const rawAuthHeader = req.headers.authorization ?? "";
-  const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] ?? "" : rawAuthHeader;
-  const token = authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+  const token = getBearerToken(req);
   const data = await store.read();
   return getSessionUser(data, token);
 }
@@ -313,14 +351,16 @@ async function saveMemoImage(groupId: string, body: { name?: string; type?: stri
   if (!match || !match[2]) throw new HttpError(400, "Invalid image data");
 
   const type = body.type || match[1] || "application/octet-stream";
-  if (!type.startsWith("image/")) throw new HttpError(400, "画像ファイルを指定してください");
+  if (!allowedImageTypes.has(type)) throw new HttpError(400, "対応している画像ファイルを指定してください");
+  const imageBuffer = Buffer.from(match[3], "base64");
+  if (imageBuffer.byteLength > memoImageMaxBytes) throw new HttpError(413, "画像ファイルが大きすぎます");
 
   const rawName = body.name?.trim() || "image";
   const id = randomUUID();
   const extension = getImageExtension(type, rawName);
   const directory = getMemoImageDirectory(groupId);
   await mkdir(directory, { recursive: true });
-  await writeFile(join(directory, `${id}${extension}`), Buffer.from(match[3], "base64"));
+  await writeFile(join(directory, `${id}${extension}`), imageBuffer);
 
   return {
     id,
@@ -331,7 +371,7 @@ async function saveMemoImage(groupId: string, body: { name?: string; type?: stri
   };
 }
 
-async function sendMemoImage(res: ServerResponse, groupId: string, id: string) {
+async function sendMemoImage(req: IncomingMessage, res: ServerResponse, groupId: string, id: string) {
   if (!/^[0-9a-f-]+$/i.test(id)) throw new HttpError(400, "Invalid image id");
   const directory = getMemoImageDirectory(groupId);
   const candidates = [".jpg", ".jpeg", ".png", ".gif", ".webp", ".heic", ".bin"];
@@ -340,7 +380,7 @@ async function sendMemoImage(res: ServerResponse, groupId: string, id: string) {
     try {
       const file = await readFile(join(directory, `${id}${extension}`));
       res.writeHead(200, {
-        "Access-Control-Allow-Origin": "*",
+        ...buildCorsHeaders(req.headers.origin),
         "Cache-Control": "private, max-age=3600",
         "Content-Type": getContentType(extension),
       });
@@ -377,4 +417,72 @@ function getContentType(extension: string) {
   if (extension === ".webp") return "image/webp";
   if (extension === ".heic") return "image/heic";
   return "application/octet-stream";
+}
+
+function getBearerToken(req: IncomingMessage) {
+  const rawAuthHeader = req.headers.authorization ?? "";
+  const authHeader = Array.isArray(rawAuthHeader) ? rawAuthHeader[0] ?? "" : rawAuthHeader;
+  return authHeader.startsWith("Bearer ") ? authHeader.slice("Bearer ".length) : "";
+}
+
+function getLoginRateLimitKey(req: IncomingMessage, email: unknown) {
+  const normalizedEmail = typeof email === "string" ? email.trim().toLowerCase() : "";
+  return `${getClientIp(req)}:${normalizedEmail}`;
+}
+
+function getClientIp(req: IncomingMessage) {
+  const forwardedFor = process.env.CALENDAR_TRUST_PROXY === "1" ? req.headers["x-forwarded-for"] : undefined;
+  const firstForwardedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor?.split(",")[0];
+  const socket = (req as IncomingMessage & { socket?: { remoteAddress?: string } }).socket;
+  return (firstForwardedIp ?? socket?.remoteAddress ?? "unknown").trim();
+}
+
+function assertLoginAllowed(key: string) {
+  const attempt = loginAttempts.get(key);
+  if (!attempt?.blockedUntil) return;
+  if (attempt.blockedUntil <= Date.now()) {
+    loginAttempts.delete(key);
+    return;
+  }
+  throw new HttpError(429, "ログイン試行が多すぎます。しばらくしてから再試行してください");
+}
+
+function recordLoginFailure(key: string) {
+  const now = Date.now();
+  const current = loginAttempts.get(key);
+  const next = current && now - current.firstFailedAt <= loginWindowMs
+    ? { ...current, failures: current.failures + 1 }
+    : { failures: 1, firstFailedAt: now };
+
+  if (next.failures >= loginMaxFailures) {
+    next.blockedUntil = now + loginBlockMs;
+  }
+  loginAttempts.set(key, next);
+}
+
+function clearLoginFailures(key: string) {
+  loginAttempts.delete(key);
+}
+
+function assertRegisterAllowed(key: string) {
+  const attempt = registerAttempts.get(key);
+  if (!attempt?.blockedUntil) return;
+  if (attempt.blockedUntil <= Date.now()) {
+    registerAttempts.delete(key);
+    return;
+  }
+  throw new HttpError(429, "登録試行が多すぎます。しばらくしてから再試行してください");
+}
+
+function recordRegisterAttempt(key: string) {
+  const now = Date.now();
+  const current = registerAttempts.get(key);
+  const next = current && now - current.firstAttemptAt <= registerWindowMs
+    ? { ...current, attempts: current.attempts + 1 }
+    : { attempts: 1, firstAttemptAt: now };
+
+  if (next.attempts >= registerMaxAttempts) {
+    next.blockedUntil = now + registerBlockMs;
+  }
+  registerAttempts.set(key, next);
 }

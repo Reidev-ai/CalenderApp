@@ -35,6 +35,7 @@ export type MemoImage = {
 
 export type Tag = {
   id: string;
+  groupId?: string;
   name: string;
   color: string;
 };

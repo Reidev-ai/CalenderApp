@@ -1,7 +1,24 @@
-import { createHash, randomUUID } from "node:crypto";
+import crypto, { createHash, randomUUID } from "node:crypto";
 import type { Schedule, Tag, UserRole } from "../../types.ts";
 import type { Database, LoginBody, MemberPatch, PublicUser, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
 import { HttpError } from "./http.ts";
+
+const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
+const passwordHashPrefix = "scrypt";
+const passwordKeyLength = 64;
+const passwordCrypto = crypto as typeof crypto & {
+  randomBytes: (size: number) => { toString: (encoding: "hex") => string };
+  scryptSync: (password: string, salt: string, keylen: number) => Uint8Array;
+  timingSafeEqual: (left: Uint8Array, right: Uint8Array) => boolean;
+};
+const defaultTagTemplates = [
+  { id: "blue", name: "通常", color: "#3b82f6" },
+  { id: "green", name: "確認", color: "#22c55e" },
+  { id: "orange", name: "注意", color: "#f97316" },
+  { id: "red", name: "重要", color: "#ef4444" },
+  { id: "purple", name: "夜間", color: "#a855f7" },
+  { id: "teal", name: "調査", color: "#14b8a6" },
+];
 
 export function publicUser(user: ServerUser): PublicUser {
   const { passwordHash, ...safeUser } = user;
@@ -9,7 +26,9 @@ export function publicUser(user: ServerUser): PublicUser {
 }
 
 export function hashPassword(password: string) {
-  return createHash("sha256").update(password).digest("hex");
+  const salt = passwordCrypto.randomBytes(16).toString("hex");
+  const hash = bytesToHex(passwordCrypto.scryptSync(password, salt, passwordKeyLength));
+  return `${passwordHashPrefix}$${salt}$${hash}`;
 }
 
 export function registerUser(data: Database, body: RegisterBody) {
@@ -53,6 +72,7 @@ export function registerUser(data: Database, body: RegisterBody) {
     group.memberIds.push(user.id);
     data.groups.push(group);
     data.users.push(user);
+    ensureGroupTags(data, group.id);
 
     return { status: 201, user: publicUser(user), group };
   }
@@ -63,6 +83,7 @@ export function registerUser(data: Database, body: RegisterBody) {
   group.memberIds.push(user.id);
   data.groups.push(group);
   data.users.push(user);
+  ensureGroupTags(data, group.id);
 
   return { status: 201, user: publicUser(user), group };
 }
@@ -70,12 +91,22 @@ export function registerUser(data: Database, body: RegisterBody) {
 export function loginUser(data: Database, body: LoginBody) {
   const email = requireString(body.email, "email").toLowerCase();
   const password = requireString(body.password, "password");
-  const user = data.users.find((item) => item.email === email && item.passwordHash === hashPassword(password));
+  const user = data.users.find((item) => item.email === email);
 
-  if (!user) throw new HttpError(401, "メールアドレスかパスワードが違います");
+  if (!user || !verifyPassword(password, user.passwordHash)) throw new HttpError(401, "メールアドレスかパスワードが違います");
   if (user.pending) throw new HttpError(403, "参加申請がまだ承認されていません");
 
-  const session = { token: randomUUID(), userId: user.id, createdAt: new Date().toISOString() };
+  if (!isCurrentPasswordHash(user.passwordHash)) {
+    user.passwordHash = hashPassword(password);
+  }
+
+  const createdAt = new Date();
+  const session = {
+    token: randomUUID(),
+    userId: user.id,
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + sessionTtlMs).toISOString(),
+  };
   data.sessions.push(session);
 
   return { token: session.token, user: publicUser(user) };
@@ -85,15 +116,26 @@ export function getSessionUser(data: Database, token: string | null | undefined)
   if (!token) throw new HttpError(401, "認証が必要です");
   const session = data.sessions.find((item) => item.token === token);
   if (!session) throw new HttpError(401, "セッションが無効です");
+  if (session.expiresAt && Date.parse(session.expiresAt) <= Date.now()) {
+    throw new HttpError(401, "セッションの期限が切れています");
+  }
   const user = data.users.find((item) => item.id === session.userId);
   if (!user || user.pending) throw new HttpError(401, "ユーザーが見つかりません");
   return user;
 }
 
-export function approveJoinRequest(data: Database, requestId: string) {
+export function logoutSession(data: Database, token: string) {
+  data.sessions = data.sessions.filter((session) => session.token !== token);
+  return { ok: true };
+}
+
+export function approveJoinRequest(data: Database, requestId: string, actor?: ServerUser) {
   const request = data.joinRequests.find((item) => item.id === requestId);
   if (!request) throw new HttpError(404, "参加申請が見つかりません");
   if (request.status !== "pending") throw new HttpError(409, "この参加申請は処理済みです");
+  if (actor && (actor.role !== "Admin" || request.groupId !== actor.groupId)) {
+    throw new HttpError(403, "権限がありません");
+  }
 
   const user = data.users.find((item) => item.id === request.userId);
   const group = data.groups.find((item) => item.id === request.groupId);
@@ -212,12 +254,7 @@ export function filterSchedules(schedules: Schedule[], query: URLSearchParams) {
 }
 
 export function filterSchedulesForUser(schedules: Schedule[], actor: ServerUser, query: URLSearchParams) {
-  const scopedSchedules = schedules.filter((schedule) => {
-    if (schedule.groupId !== actor.groupId) return false;
-    if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
-    if (actor.role === "Admin") return true;
-    return (schedule.memberIds ?? []).includes(actor.id) || schedule.members.includes(actor.name);
-  });
+  const scopedSchedules = schedules.filter((schedule) => canReadSchedule(schedule, actor));
 
   return filterSchedules(scopedSchedules, query);
 }
@@ -260,9 +297,12 @@ export function moveScheduleToTrash(data: Database, scheduleId: string, actor?: 
   return schedule;
 }
 
-export function restoreSchedule(data: Database, scheduleId: string) {
+export function restoreSchedule(data: Database, scheduleId: string, actor?: ServerUser) {
   const index = data.trashSchedules.findIndex((schedule) => schedule.id === scheduleId);
   if (index === -1) throw new HttpError(404, "ゴミ箱にスケジュールが見つかりません");
+  if (actor && (actor.role !== "Admin" || data.trashSchedules[index].groupId !== actor.groupId)) {
+    throw new HttpError(403, "権限がありません");
+  }
 
   const [schedule] = data.trashSchedules.splice(index, 1);
   data.schedules.push(schedule);
@@ -272,7 +312,7 @@ export function restoreSchedule(data: Database, scheduleId: string) {
 export function markScheduleRead(data: Database, scheduleId: string, member: string, actor?: ServerUser) {
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
-  if (actor && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (actor && !canReadSchedule(schedule, actor)) throw new HttpError(403, "権限がありません");
   if (!schedule.readBy.includes(member)) schedule.readBy.push(member);
   if (actor) schedule.readByUserIds = [...new Set([...(schedule.readByUserIds ?? []), actor.id])];
   return schedule;
@@ -281,14 +321,20 @@ export function markScheduleRead(data: Database, scheduleId: string, member: str
 export function markScheduleChangeRead(data: Database, scheduleId: string, userId: string, actor?: ServerUser) {
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
-  if (actor && schedule.groupId !== actor.groupId) throw new HttpError(403, "権限がありません");
+  if (actor && !canReadSchedule(schedule, actor)) throw new HttpError(403, "権限がありません");
   schedule.changeReadBy = [...new Set([...(schedule.changeReadBy ?? []), userId])];
   return schedule;
 }
 
-export function createTag(data: Database, body: Partial<Tag>) {
+export function listTags(data: Database, groupId: string) {
+  ensureGroupTags(data, groupId);
+  return data.tags.filter((tag) => tag.groupId === groupId);
+}
+
+export function createTag(data: Database, body: Partial<Tag>, groupId: string) {
   const tag = {
     id: body.id ?? randomUUID(),
+    groupId,
     name: requireString(body.name, "name"),
     color: requireString(body.color, "color"),
   };
@@ -296,20 +342,20 @@ export function createTag(data: Database, body: Partial<Tag>) {
   return tag;
 }
 
-export function updateTag(data: Database, tagId: string, patch: Partial<Tag>) {
-  const tag = data.tags.find((item) => item.id === tagId);
+export function updateTag(data: Database, tagId: string, patch: Partial<Tag>, groupId: string) {
+  const tag = data.tags.find((item) => item.id === tagId && item.groupId === groupId);
   if (!tag) throw new HttpError(404, "タグが見つかりません");
   if (patch.name !== undefined) tag.name = patch.name;
   if (patch.color !== undefined) tag.color = patch.color;
   return tag;
 }
 
-export function deleteTag(data: Database, tagId: string) {
-  const tag = data.tags.find((item) => item.id === tagId);
+export function deleteTag(data: Database, tagId: string, groupId: string) {
+  const tag = data.tags.find((item) => item.id === tagId && item.groupId === groupId);
   if (!tag) throw new HttpError(404, "タグが見つかりません");
   data.tags = data.tags.filter((item) => item.id !== tagId);
-  data.schedules = data.schedules.map((schedule) => removeTagFromSchedule(schedule, tag.color));
-  data.trashSchedules = data.trashSchedules.map((schedule) => removeTagFromSchedule(schedule, tag.color));
+  data.schedules = data.schedules.map((schedule) => schedule.groupId === groupId ? removeTagFromSchedule(schedule, tag.color) : schedule);
+  data.trashSchedules = data.trashSchedules.map((schedule) => schedule.groupId === groupId ? removeTagFromSchedule(schedule, tag.color) : schedule);
   return tag;
 }
 
@@ -372,6 +418,13 @@ function assertCanWriteSchedule(schedule: Schedule, actor: ServerUser) {
   throw new HttpError(403, "権限がありません");
 }
 
+function canReadSchedule(schedule: Schedule, actor: ServerUser) {
+  if (schedule.groupId !== actor.groupId) return false;
+  if (schedule.isPersonal) return schedule.ownerUserId === actor.id;
+  if (actor.role === "Admin") return true;
+  return (schedule.memberIds ?? []).includes(actor.id) || schedule.members.includes(actor.name);
+}
+
 function normalizeTimeString(time: string) {
   const [rawHour, rawMinute] = time.split(":").map(Number);
   const hour = Math.min(23, Math.max(0, Number.isFinite(rawHour) ? rawHour : 0));
@@ -395,6 +448,53 @@ function removeTagFromSchedule(schedule: Schedule, color: string): Schedule {
 
 function getScheduleTagColors(schedule: Schedule) {
   return schedule.tagColors?.length ? schedule.tagColors : [schedule.tagColor];
+}
+
+function ensureGroupTags(data: Database, groupId: string) {
+  const hasGroupTags = data.tags.some((tag) => tag.groupId === groupId);
+  if (hasGroupTags) return;
+
+  data.tags.push(...defaultTagTemplates.map((tag) => ({
+    ...tag,
+    id: `${groupId}-${tag.id}`,
+    groupId,
+  })));
+}
+
+function verifyPassword(password: string, storedHash: string) {
+  if (isCurrentPasswordHash(storedHash)) {
+    const [, salt, hash] = storedHash.split("$");
+    if (!salt || !hash) return false;
+    const expected = hexToBytes(hash);
+    if (expected.length !== passwordKeyLength) return false;
+    const actual = passwordCrypto.scryptSync(password, salt, expected.length);
+    return expected.length === actual.length && passwordCrypto.timingSafeEqual(expected, actual);
+  }
+
+  return legacySha256PasswordHash(password) === storedHash;
+}
+
+function isCurrentPasswordHash(storedHash: string) {
+  return storedHash.startsWith(`${passwordHashPrefix}$`);
+}
+
+function legacySha256PasswordHash(password: string) {
+  return createHash("sha256").update(password).digest("hex");
+}
+
+function bytesToHex(bytes: Uint8Array) {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function hexToBytes(hex: string) {
+  if (hex.length % 2 !== 0) return new Uint8Array();
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index = 0; index < bytes.length; index += 1) {
+    const byte = Number.parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+    if (!Number.isFinite(byte)) return new Uint8Array();
+    bytes[index] = byte;
+  }
+  return bytes;
 }
 
 function requireString(value: unknown, field: string) {

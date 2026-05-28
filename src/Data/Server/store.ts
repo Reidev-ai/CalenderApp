@@ -106,6 +106,10 @@ CREATE TABLE IF NOT EXISTS records (
 export const JsonStore = SqliteStore;
 
 async function loadInitialData(): Promise<Database> {
+  if (process.env.CALENDAR_SEED_DATA !== "1") {
+    return emptyDatabase();
+  }
+
   try {
     const file = await readFile(legacyDataFile, "utf8");
     return normalizeDatabase(JSON.parse(file));

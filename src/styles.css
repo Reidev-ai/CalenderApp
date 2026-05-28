@@ -2,10 +2,20 @@
   font-family: Inter, "Hiragino Sans", "Yu Gothic", system-ui, sans-serif;
   color: #1e1e1e;
   background: #f4f5f7;
+  overscroll-behavior: none;
 }
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 
 body {
@@ -25,7 +35,25 @@ button {
 .app-shell {
   min-width: 0;
   min-height: 100dvh;
+  overflow: hidden;
+  overscroll-behavior: none;
   background: #eef0f3;
+}
+
+.capture-panel,
+.capture-member-list,
+.account-panel,
+.search-result-list,
+.editor-body,
+.detail-body,
+.overlap-list,
+.address-suggestion-list,
+.auto-size-textarea,
+.notification-panel,
+.setting-drawer,
+.mobile-action-drawer,
+.filter-popover {
+  overscroll-behavior: contain;
 }
 
 .login-screen {
@@ -54,9 +82,14 @@ button {
   margin-bottom: 18px;
 }
 
+.login-header .segmented-control {
+  flex: 0 0 auto;
+}
+
 .login-header h1 {
   margin: 0;
   font-size: 22px;
+  white-space: nowrap;
 }
 
 .login-message {
@@ -662,6 +695,7 @@ button {
 .primary-button,
 .danger-button {
   height: 38px;
+  min-width: max-content;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -671,6 +705,7 @@ button {
   background: #ffffff;
   color: #303846;
   padding: 0 12px;
+  white-space: nowrap;
 }
 
 .icon-button {
@@ -728,10 +763,12 @@ button {
 
 .segmented-control button,
 .mode-tabs button {
+  min-width: max-content;
   border: 0;
   border-radius: 6px;
   background: transparent;
   padding: 0 12px;
+  white-space: nowrap;
 }
 
 .segmented-control .active,
@@ -1091,6 +1128,8 @@ button {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 4px;
 }
 
 .month-date-pill {
@@ -1182,13 +1221,17 @@ button {
 }
 
 .month-hidden-count {
-  height: 24px;
-  border: 1px solid #c7d2fe;
-  border-radius: 999px;
-  background: #eef2ff;
-  color: #3730a3;
-  font-size: var(--calendar-small-font-size);
+  min-width: 0;
+  height: 26px;
+  padding: 0 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #2563eb;
+  font-size: var(--calendar-label-font-size);
   font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
 }
 
 .time-axis {
@@ -1458,8 +1501,11 @@ button {
   gap: 8px;
 }
 
-.address-field {
-  z-index: 4;
+.compact-reset-button {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .address-suggestion-list {
@@ -2061,13 +2107,18 @@ button:disabled {
 .sidebar-actions {
   position: sticky;
   bottom: -18px;
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(72px, 1fr));
   gap: 8px;
   margin: auto -18px -18px;
   padding: 10px 18px 18px;
   background: #fff7f7;
+}
+
+.sidebar-actions .primary-button,
+.sidebar-actions .secondary-button,
+.sidebar-actions .danger-button {
+  min-width: 0;
 }
 
 .read-status {
@@ -2124,6 +2175,7 @@ button:disabled {
 }
 
 .overlap-item {
+  position: relative;
   width: 100%;
   display: flex;
   flex-direction: column;
@@ -2135,6 +2187,12 @@ button:disabled {
   border-radius: 8px;
   background: #ffffff;
   text-align: left;
+}
+
+.overlap-item.unread-task {
+  border-color: #f97316;
+  background: #fff7ed;
+  box-shadow: inset 4px 0 0 #f97316;
 }
 
 .overlap-item span {
@@ -2759,6 +2817,14 @@ button:disabled {
     --calendar-small-font-size: clamp(6px, 2vw, 9px);
   }
 
+  .workspace.sidebar-visible .calendar-panel {
+    flex: 0 0 calc(100% - min(var(--mobile-sidebar-height, 42dvh), min(42dvh, 360px)));
+  }
+
+  .calendar-title-sidebar-button svg {
+    transform: rotate(90deg);
+  }
+
   .month-title-row h1,
   .calendar-title-row h1,
   .month-weekday-cell,
@@ -2817,6 +2883,7 @@ button:disabled {
 
   .month-hidden-count {
     height: 18px;
+    padding: 0 1px;
   }
 
   .week-header {
@@ -2853,18 +2920,44 @@ button:disabled {
   }
 
   .sidebar.open {
-    flex: 0 0 min(42dvh, 360px);
-    height: auto;
+    --mobile-sidebar-base-height: min(42dvh, 360px);
+    --mobile-sidebar-active-height: min(var(--mobile-sidebar-height, 42dvh), calc(100dvh - 64px));
+    position: absolute;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    flex: none;
+    height: var(--mobile-sidebar-active-height);
+    z-index: 2;
     border-top: 1px solid #ded5d5;
     border-left: 0;
   }
 
   .sidebar-resize-handle {
-    display: none;
+    top: 0;
+    right: 0;
+    bottom: auto;
+    left: 0;
+    width: 100%;
+    height: 28px;
+    display: block;
+    cursor: row-resize;
+  }
+
+  .sidebar-resize-handle::after {
+    content: "";
+    position: absolute;
+    top: 7px;
+    left: 50%;
+    width: 46px;
+    height: 4px;
+    transform: translateX(-50%);
+    border-radius: 999px;
+    background: #c7bcbc;
   }
 
   .sidebar-header {
-    padding: 6px 8px;
+    padding: 18px 8px 6px;
   }
 
   .mode-tabs {

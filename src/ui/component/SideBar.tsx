@@ -1,4 +1,4 @@
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import type { AuthUser, MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { AdminSidebarContent } from "../ForAdmin/AdminSidebarContent";
 import { GuestSidebarContent } from "../ForGuest/GuestSidebarContent";
@@ -8,6 +8,7 @@ type SideBarProps = {
   open: boolean;
   role: UserRole;
   mode: SidebarMode;
+  mobileHeightDvh: number;
   selectedSchedule: Schedule | null;
   currentUserId: string;
   currentUserName: string;
@@ -36,6 +37,7 @@ export function SideBar({
   open,
   role,
   mode,
+  mobileHeightDvh,
   selectedSchedule,
   currentUserId,
   currentUserName,
@@ -60,7 +62,7 @@ export function SideBar({
   onDirtyChange,
 }: SideBarProps) {
   return (
-    <aside className={`sidebar ${open ? "open" : ""}`}>
+    <aside className={`sidebar ${open ? "open" : ""}`} style={{ "--mobile-sidebar-height": `${mobileHeightDvh}dvh` } as CSSProperties}>
       <button className="sidebar-resize-handle" aria-label="サイドバー幅変更" onPointerDown={onStartResize} />
       <div className="sidebar-header">
         <div className="mode-tabs">
@@ -70,7 +72,7 @@ export function SideBar({
         </div>
       </div>
       {mode === "overlapList" ? (
-        <OverlapTaskList schedules={overlapList} onSelectSchedule={onSelectSchedule} />
+        <OverlapTaskList schedules={overlapList} role={role} currentUserId={currentUserId} currentUserName={currentUserName} onSelectSchedule={onSelectSchedule} />
       ) : role === "Admin" || (role === "User" && selectedSchedule?.isPersonal && mode === "edit") ? (
         <AdminSidebarContent
           mode={mode}
@@ -103,17 +105,41 @@ export function SideBar({
   );
 }
 
-function OverlapTaskList({ schedules, onSelectSchedule }: { schedules: Schedule[]; onSelectSchedule: (schedule: Schedule) => void }) {
+function OverlapTaskList({
+  schedules,
+  role,
+  currentUserId,
+  currentUserName,
+  onSelectSchedule,
+}: {
+  schedules: Schedule[];
+  role: UserRole;
+  currentUserId: string;
+  currentUserName: string;
+  onSelectSchedule: (schedule: Schedule) => void;
+}) {
   return (
     <div className="overlap-list">
       <p className="list-note">表示しきれなかったタスク</p>
-      {schedules.map((schedule) => (
-        <button className="overlap-item" key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
-          <span>{schedule.startTime} ~ {schedule.endTime}</span>
-          <strong>{schedule.siteName}</strong>
-          <small>{schedule.members.join("、")}</small>
-        </button>
-      ))}
+      {schedules.map((schedule) => {
+        const isUnread = isUnreadForCurrentUser(schedule, role, currentUserId, currentUserName);
+
+        return (
+          <button className={`overlap-item ${isUnread ? "unread-task" : ""}`} key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+            {isUnread && <span className="unread-badge">未</span>}
+            <span>{schedule.startTime} ~ {schedule.endTime}</span>
+            <strong>{schedule.siteName}</strong>
+            <small>{schedule.members.join("、")}</small>
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+function isUnreadForCurrentUser(schedule: Schedule, role: UserRole, currentUserId: string, currentUserName: string) {
+  if (role !== "User") return false;
+  if (currentUserId && (schedule.readByUserIds ?? []).includes(currentUserId)) return false;
+  if (currentUserName && schedule.readBy.includes(currentUserName)) return false;
+  return true;
 }

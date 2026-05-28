@@ -9,7 +9,9 @@
     "preview": "vite preview",
     "server:dev": "node --experimental-strip-types src/Data/Server/server.ts",
     "server:dev:host": "HOST=0.0.0.0 node --experimental-strip-types src/Data/Server/server.ts",
-    "server:check": "tsc -p tsconfig.server.json"
+    "server:check": "tsc -p tsconfig.server.json",
+    "backup:data": "node --experimental-strip-types src/Data/Server/backup.ts",
+    "backup:schedule": "node --experimental-strip-types src/Data/Server/backupScheduler.ts"
   },
   "dependencies": {
     "@types/react": "^19.2.0",

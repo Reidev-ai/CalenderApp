@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { toPng } from "html-to-image";
 import JSZip from "jszip";
-import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, MessageSquare, PanelRightOpen, Plus, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, MessageSquare, PanelRightOpen, Plus, RotateCcw, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, MemoImage, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
 import { LoginView } from "./ui/Share/login/LoginView";
@@ -17,6 +17,8 @@ const tagStorageKey = "calender-tags-v1";
 const offlineStorageKey = "calender-offline-cache-v1";
 const authStorageKey = "calender-auth-v1";
 const memberDisplayNameStorageKey = "calender-member-display-names-v1";
+const taskCellPriorityStorageKey = "calender-task-cell-priority-v1";
+const mobileSidebarTopbarHeight = 64;
 type CaptureTarget = "current" | "members";
 type SearchSort = "dateAsc" | "dateDesc" | "updatedDesc" | "siteName";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
@@ -82,10 +84,11 @@ export default function App() {
     const saved = localStorage.getItem(tagStorageKey);
     return saved ? (JSON.parse(saved) as Tag[]) : defaultTags;
   });
-  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(mockSchedules[0]?.id ?? null);
+  const [selectedScheduleId, setSelectedScheduleId] = useState<string | null>(null);
   const [draftNewSchedule, setDraftNewSchedule] = useState<Schedule | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [sidebarWidth, setSidebarWidth] = useState(380);
+  const [mobileSidebarHeight, setMobileSidebarHeight] = useState(42);
   const [settingOpen, setSettingOpen] = useState(false);
   const [capturePanelOpen, setCapturePanelOpen] = useState(false);
   const [captureRendering, setCaptureRendering] = useState(false);
@@ -114,7 +117,7 @@ export default function App() {
   const [dirtyEditor, setDirtyEditor] = useState(false);
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
-  const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(defaultTaskCellPriority);
+  const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(loadTaskCellPriority);
   const [tagContextMenu, setTagContextMenu] = useState<{ tag: Tag; x: number; y: number } | null>(null);
   const now = useCurrentTime();
   const currentMinute = now.getHours() * 60 + now.getMinutes();
@@ -241,7 +244,7 @@ export default function App() {
       setSchedules(nextSchedules);
       setTrashSchedules(nextTrashSchedules);
       setTags(tagPayload.tags);
-      setSelectedScheduleId((current) => current ?? nextSchedules[0]?.id ?? null);
+      setSelectedScheduleId((current) => current && nextSchedules.some((schedule) => schedule.id === current) ? current : null);
       setOfflineMode(false);
       saveOfflineCache(groupId, nextSchedules, nextTrashSchedules, tagPayload.tags);
     } catch (error) {
@@ -339,6 +342,10 @@ export default function App() {
   }, [tags]);
 
   useEffect(() => {
+    localStorage.setItem(taskCellPriorityStorageKey, JSON.stringify(taskCellPriority.map((item) => item.id)));
+  }, [taskCellPriority]);
+
+  useEffect(() => {
     if (role !== "Admin" && !(role === "User" && selectedSchedule?.isPersonal) && sidebarMode === "edit") {
       setSidebarMode("detail");
     }
@@ -367,36 +374,9 @@ export default function App() {
   function changeSidebarMode(mode: SidebarMode) {
     if (mode === "overlapList") {
       if (!confirmDiscardIfDirty()) return;
-      setOverlapList(getCurrentViewSchedules());
     }
     if (mode !== "edit") setDraftNewSchedule(null);
     setSidebarMode(mode);
-  }
-
-  function getCurrentViewSchedules() {
-    if (viewMode === "month") {
-      return visibleSchedules.filter((schedule) => {
-        const endDate = schedule.endDate ?? schedule.date;
-        const monthStart = toDateKey(monthDates[0]);
-        const monthEnd = toDateKey(monthDates[monthDates.length - 1]);
-        return schedule.date <= monthEnd && endDate >= monthStart;
-      });
-    }
-
-    if (viewMode === "week") {
-      const weekStart = toDateKey(weekDates[0]);
-      const weekEnd = toDateKey(weekDates[weekDates.length - 1]);
-      return visibleSchedules.filter((schedule) => {
-        const endDate = schedule.endDate ?? schedule.date;
-        return schedule.date <= weekEnd && endDate >= weekStart;
-      });
-    }
-
-    const dayKey = toDateKey(anchorDate);
-    return visibleSchedules.filter((schedule) => {
-      const endDate = schedule.endDate ?? schedule.date;
-      return schedule.date <= dayKey && endDate >= dayKey;
-    });
   }
 
   function moveScheduleByDrag(schedule: Schedule, nextDate: string, nextStartMinutes: number) {
@@ -576,6 +556,24 @@ export default function App() {
 
   function startSidebarResize(event: ReactPointerEvent<HTMLButtonElement>) {
     event.preventDefault();
+    if (window.matchMedia("(max-width: 720px)").matches) {
+      const startY = event.clientY;
+      const startHeight = mobileSidebarHeight;
+      const viewportHeight = window.innerHeight || 1;
+      const maxHeight = ((viewportHeight - mobileSidebarTopbarHeight) / viewportHeight) * 100;
+      const onPointerMove = (moveEvent: PointerEvent) => {
+        const deltaDvh = ((startY - moveEvent.clientY) / viewportHeight) * 100;
+        setMobileSidebarHeight(Math.min(maxHeight, Math.max(24, startHeight + deltaDvh)));
+      };
+      const onPointerUp = () => {
+        window.removeEventListener("pointermove", onPointerMove);
+        window.removeEventListener("pointerup", onPointerUp);
+      };
+      window.addEventListener("pointermove", onPointerMove);
+      window.addEventListener("pointerup", onPointerUp);
+      return;
+    }
+
     const startX = event.clientX;
     const startWidth = sidebarWidth;
     const onPointerMove = (moveEvent: PointerEvent) => {
@@ -638,11 +636,16 @@ export default function App() {
     });
   }
 
-  function selectDate(dateKey: string) {
+  function selectDate(dateKey: string, hiddenSchedules: Schedule[] = []) {
     if (!confirmDiscardIfDirty()) return;
     setDraftNewSchedule(null);
     setSelectedDateKey(dateKey);
     setAnchorDate(dateKeyToDate(dateKey));
+    if (hiddenSchedules.length > 0 || sidebarMode === "overlapList") {
+      setOverlapList(hiddenSchedules);
+      setSidebarMode("overlapList");
+      setSidebarOpen(true);
+    }
   }
 
   function changeViewMode(mode: CalendarViewMode) {
@@ -731,6 +734,9 @@ export default function App() {
   }
 
   function logout() {
+    void postApiJson("/api/auth/logout", {}).catch(() => {
+      // Logout must clear the local session even if the API is already unreachable.
+    });
     setAuthSession(null);
     setSelectedScheduleId(null);
     setSidebarMode("detail");
@@ -793,7 +799,10 @@ export default function App() {
       />
       <main
         className={`workspace ${sidebarOpen ? "sidebar-visible" : "sidebar-hidden"}`}
-        style={{ gridTemplateColumns: sidebarOpen ? `minmax(0, 1fr) ${sidebarWidth}px` : "minmax(0, 1fr) 0px" }}
+        style={{
+          gridTemplateColumns: sidebarOpen ? `minmax(0, 1fr) ${sidebarWidth}px` : "minmax(0, 1fr) 0px",
+          "--mobile-sidebar-height": `${mobileSidebarHeight}dvh`,
+        } as CSSProperties}
       >
         {(apiMessage || offlineMode) && <div className="api-message-banner">{offlineMode ? "オフライン表示中" : apiMessage}</div>}
         {searchActive && (
@@ -834,6 +843,8 @@ export default function App() {
             monthDates={monthDates}
             schedules={visibleSchedules}
             role={role}
+            currentUserId={authSession.user.id}
+            currentUserName={authSession.user.name}
             taskCellPriority={taskCellPriority}
             selectedDateKey={selectedDateKey}
             titleAction={sidebarTitleButton}
@@ -849,6 +860,8 @@ export default function App() {
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             role={role}
+            currentUserId={authSession.user.id}
+            currentUserName={authSession.user.name}
             taskCellPriority={taskCellPriority}
             titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
@@ -862,6 +875,8 @@ export default function App() {
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             role={role}
+            currentUserId={authSession.user.id}
+            currentUserName={authSession.user.name}
             taskCellPriority={taskCellPriority}
             titleAction={sidebarTitleButton}
             onSelectSchedule={openSchedule}
@@ -873,6 +888,7 @@ export default function App() {
           open={sidebarOpen}
           role={role}
           mode={sidebarMode}
+          mobileHeightDvh={mobileSidebarHeight}
           selectedSchedule={selectedSchedule}
           currentUserId={authSession.user.id}
           currentUserName={authSession.user.name}
@@ -905,6 +921,7 @@ export default function App() {
         captureLoading={captureLoading}
         onOpenCapturePanel={() => setCapturePanelOpen(true)}
         onTaskCellPriorityChange={setTaskCellPriority}
+        onTaskCellPriorityReset={() => setTaskCellPriority(defaultTaskCellPriority)}
         onAddTag={addTag}
         onUpdateTag={updateTag}
         onRestoreSchedule={restoreSchedule}
@@ -943,6 +960,8 @@ export default function App() {
                 monthDates={monthDates}
                 schedules={captureSchedules ?? visibleSchedules}
                 role={role}
+                currentUserId={authSession.user.id}
+                currentUserName={authSession.user.name}
                 taskCellPriority={taskCellPriority}
                 selectedDateKey={selectedDateKey}
                 onSelectDate={() => undefined}
@@ -957,6 +976,8 @@ export default function App() {
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
+                currentUserId={authSession.user.id}
+                currentUserName={authSession.user.name}
                 taskCellPriority={taskCellPriority}
                 onSelectSchedule={() => undefined}
                 onOpenOverlapList={() => undefined}
@@ -969,6 +990,8 @@ export default function App() {
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
+                currentUserId={authSession.user.id}
+                currentUserName={authSession.user.name}
                 taskCellPriority={taskCellPriority}
                 onSelectSchedule={() => undefined}
                 onOpenOverlapList={() => undefined}
@@ -1970,6 +1993,36 @@ function getViewModeLabel(viewMode: CalendarViewMode) {
   return "日表示";
 }
 
+function loadTaskCellPriority() {
+  const saved = localStorage.getItem(taskCellPriorityStorageKey);
+  if (!saved) return defaultTaskCellPriority;
+
+  try {
+    return normalizeTaskCellPriority(JSON.parse(saved));
+  } catch {
+    return defaultTaskCellPriority;
+  }
+}
+
+function normalizeTaskCellPriority(value: unknown) {
+  if (!Array.isArray(value)) return defaultTaskCellPriority;
+
+  const priorityById = new Map(defaultTaskCellPriority.map((item) => [item.id, item]));
+  const orderedItems: TaskCellPriorityItem[] = [];
+
+  for (const item of value) {
+    const id = typeof item === "string" ? item : item?.id;
+    const priorityItem = priorityById.get(id);
+    if (!priorityItem || orderedItems.some((current) => current.id === priorityItem.id)) continue;
+    orderedItems.push(priorityItem);
+  }
+
+  return [
+    ...orderedItems,
+    ...defaultTaskCellPriority.filter((item) => !orderedItems.some((current) => current.id === item.id)),
+  ];
+}
+
 function SettingDrawer({
   open,
   tags,
@@ -1978,6 +2031,7 @@ function SettingDrawer({
   captureLoading,
   onOpenCapturePanel,
   onTaskCellPriorityChange,
+  onTaskCellPriorityReset,
   onAddTag,
   onUpdateTag,
   onRestoreSchedule,
@@ -1992,6 +2046,7 @@ function SettingDrawer({
   captureLoading: boolean;
   onOpenCapturePanel: () => void;
   onTaskCellPriorityChange: (priority: TaskCellPriorityItem[]) => void;
+  onTaskCellPriorityReset: () => void;
   onAddTag: () => void;
   onUpdateTag: (tagId: string, patch: Partial<Tag>) => void;
   onRestoreSchedule: (schedule: Schedule) => void;
@@ -2022,7 +2077,13 @@ function SettingDrawer({
           画像出力を開く
         </button>
         <div className="field">
-          <span>TaskCell表示優先順位</span>
+          <div className="field-label-row">
+            <span>TaskCell表示優先順位</span>
+            <button className="secondary-button compact-reset-button" type="button" onClick={onTaskCellPriorityReset}>
+              <RotateCcw size={14} />
+              リセット
+            </button>
+          </div>
           <div className="priority-sort-list">
             {taskCellPriority.map((item, index) => (
               <button
