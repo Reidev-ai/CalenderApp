@@ -124,7 +124,11 @@ function getApiBaseUrl() {
   const viteEnv = (import.meta as unknown as { env?: Record<string, string | undefined> }).env;
   if (viteEnv?.VITE_API_BASE_URL) return viteEnv.VITE_API_BASE_URL;
 
-  return `http://${window.location.hostname}:8787`;
+  if (window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1") {
+    return `http://${window.location.hostname}:8787`;
+  }
+
+  return window.location.origin;
 }
 
 function formatScheduleDateRange(schedule: Schedule) {
