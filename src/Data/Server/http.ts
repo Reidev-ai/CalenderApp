@@ -55,7 +55,9 @@ export async function parseJsonBody<T>(req: IncomingMessage, options: { maxBytes
 export function sendJson(res: ServerResponse, status: number, payload: unknown, origin?: string | string[]) {
   res.writeHead(status, {
     ...buildCorsHeaders(origin),
+    "Cache-Control": "no-store",
     "Content-Type": "application/json; charset=utf-8",
+    "X-Content-Type-Options": "nosniff",
   });
   res.end(JSON.stringify(payload));
 }
@@ -63,6 +65,8 @@ export function sendJson(res: ServerResponse, status: number, payload: unknown, 
 export function sendNoContent(res: ServerResponse, origin?: string | string[]) {
   res.writeHead(204, {
     ...buildCorsHeaders(origin),
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
   });
   res.end();
 }

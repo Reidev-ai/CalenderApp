@@ -191,7 +191,7 @@ export function updateGroupMember(data: Database, groupId: string, userId: strin
   }
 
   if (patch.role !== undefined) {
-    if (patch.role === "Guest") throw new HttpError(400, "Guestには変更できません");
+    if (!isAssignableRole(patch.role)) throw new HttpError(400, "role must be Admin or User");
     if (user.role === "Admin" && patch.role !== "Admin" && group.adminIds.length <= 1) {
       throw new HttpError(409, "最後のAdminは降格できません");
     }
@@ -202,6 +202,10 @@ export function updateGroupMember(data: Database, groupId: string, userId: strin
   }
 
   return { user: publicUser(user), group };
+}
+
+function isAssignableRole(value: unknown): value is "Admin" | "User" {
+  return value === "Admin" || value === "User";
 }
 
 export function removeGroupMember(data: Database, groupId: string, userId: string) {

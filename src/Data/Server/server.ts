@@ -374,7 +374,7 @@ async function saveMemoImage(groupId: string, body: { name?: string; type?: stri
 
 function assertCanReadMemoImage(data: Database, actor: ServerUser, imageId: string) {
   const imageUrl = `/api/memo-images/${imageId}`;
-  const schedules = [...data.schedules, ...data.trashSchedules];
+  const schedules = actor.role === "Admin" ? [...data.schedules, ...data.trashSchedules] : data.schedules;
   const hasReadableImage = schedules.some((schedule) => (
     canReadSchedule(schedule, actor)
     && (schedule.memoImages ?? []).some((image) => image.id === imageId || image.url === imageUrl)

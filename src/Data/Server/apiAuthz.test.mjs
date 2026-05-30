@@ -34,6 +34,10 @@ try {
   const groupAId = adminARegister.group.id;
   const adminA = await login(baseUrl, "admin-a@example.test", "password-a");
 
+  const meResponse = await requestRaw(baseUrl, "/api/auth/me", { token: adminA.token });
+  assert.equal(meResponse.headers.get("cache-control"), "no-store");
+  assert.equal(meResponse.headers.get("x-content-type-options"), "nosniff");
+
   await requestJson(baseUrl, "/api/auth/register", {
     method: "POST",
     body: {
@@ -64,6 +68,13 @@ try {
     token: adminA.token,
   });
   const userA = await login(baseUrl, "user-a@example.test", "password-user");
+
+  await requestJson(baseUrl, `/api/groups/${groupAId}/members/${userA.user.id}`, {
+    method: "PATCH",
+    token: adminA.token,
+    body: { role: "Owner" },
+    expectedStatus: 400,
+  });
 
   const hiddenSchedule = await requestJson(baseUrl, "/api/schedules", {
     method: "POST",
@@ -162,6 +173,25 @@ try {
   assert.equal(imageResponse.headers.get("x-content-type-options"), "nosniff");
   await requestRaw(baseUrl, imagePayload.image.url, { token: userA.token, expectedStatus: 404 });
   await requestRaw(baseUrl, imagePayload.image.url, { token: adminB.token, expectedStatus: 404 });
+
+  const assignedImageSchedule = await requestJson(baseUrl, "/api/schedules", {
+    method: "POST",
+    token: adminA.token,
+    body: buildSchedule({
+      siteName: "Assigned schedule with image",
+      members: ["User A"],
+      memberIds: [userA.user.id],
+      memoImages: [imagePayload.image],
+    }),
+    expectedStatus: 201,
+  });
+  await requestRaw(baseUrl, imagePayload.image.url, { token: userA.token, expectedStatus: 200 });
+  await requestJson(baseUrl, `/api/schedules/${assignedImageSchedule.schedule.id}`, {
+    method: "DELETE",
+    token: adminA.token,
+  });
+  await requestRaw(baseUrl, imagePayload.image.url, { token: userA.token, expectedStatus: 404 });
+  await requestRaw(baseUrl, imagePayload.image.url, { token: adminA.token, expectedStatus: 200 });
 
   console.log("[apiAuthz.test] ok");
 } finally {
