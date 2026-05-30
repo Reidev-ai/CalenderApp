@@ -4,6 +4,11 @@ import { dirname, join } from "node:path";
 
 const defaultLogDir = new URL("../data/logs/", import.meta.url);
 const logFile = process.env.LOG_FILE ?? join(process.env.CALENDAR_DATA_DIR ?? defaultLogDir.pathname, process.env.CALENDAR_DATA_DIR ? "logs/app.log" : "app.log");
+const redactedValue = "[REDACTED]";
+const circularValue = "[Circular]";
+const maxLoggedStringLength = 4000;
+const sensitiveKeyPattern = /(authorization|password|token)/i;
+const bearerTokenPattern = /Bearer\s+[A-Za-z0-9._~+/=-]+/g;
 
 type LogLevel = "info" | "warn" | "error";
 
@@ -42,10 +47,32 @@ async function appendLine(line: string) {
 }
 
 function sanitizeFields(fields: Record<string, unknown>) {
-  const sanitized = { ...fields };
-  delete sanitized.password;
-  delete sanitized.passwordHash;
-  delete sanitized.token;
-  delete sanitized.authorization;
+  return sanitizeRecord(fields, new WeakSet<object>());
+}
+
+function sanitizeRecord(fields: Record<string, unknown>, seen: WeakSet<object>) {
+  const sanitized: Record<string, unknown> = {};
+
+  for (const [key, value] of Object.entries(fields)) {
+    sanitized[key] = sanitizeValue(key, value, seen);
+  }
+
   return sanitized;
+}
+
+function sanitizeValue(key: string, value: unknown, seen: WeakSet<object>): unknown {
+  if (sensitiveKeyPattern.test(key)) return redactedValue;
+  if (typeof value === "string") return sanitizeString(value);
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return circularValue;
+
+  seen.add(value);
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue("", item, seen));
+  return sanitizeRecord(value as Record<string, unknown>, seen);
+}
+
+function sanitizeString(value: string) {
+  const redacted = value.replace(bearerTokenPattern, `Bearer ${redactedValue}`);
+  if (redacted.length <= maxLoggedStringLength) return redacted;
+  return `${redacted.slice(0, maxLoggedStringLength)}...[truncated]`;
 }

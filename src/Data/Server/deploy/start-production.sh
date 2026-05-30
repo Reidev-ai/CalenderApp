@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 ENV_FILE="${1:-./production.env}"
 

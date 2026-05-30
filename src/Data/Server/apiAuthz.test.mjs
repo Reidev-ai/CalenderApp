@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -75,6 +75,7 @@ try {
     body: { role: "Owner" },
     expectedStatus: 400,
   });
+  await assertClientLogsRedactSecrets(baseUrl, adminA.token);
 
   const hiddenSchedule = await requestJson(baseUrl, "/api/schedules", {
     method: "POST",
@@ -261,6 +262,31 @@ async function assertForwardedForRateLimitCannotBeSpoofed(baseUrl) {
     headers: { "X-Forwarded-For": `198.51.100.250, ${realClientIp}` },
     expectedStatus: 429,
   });
+}
+
+async function assertClientLogsRedactSecrets(baseUrl, token) {
+  await requestJson(baseUrl, "/api/client-logs", {
+    method: "POST",
+    token,
+    body: {
+      message: "failed with Authorization: Bearer client-visible-token",
+      stack: {
+        authorization: "Bearer nested-token",
+        nested: {
+          authToken: "stored-token",
+          password: "secret-password",
+        },
+      },
+    },
+    expectedStatus: 202,
+  });
+
+  const logContent = await readFile(path.join(dataDir, "logs", "app.log"), "utf8");
+  assert.equal(logContent.includes("client-visible-token"), false);
+  assert.equal(logContent.includes("nested-token"), false);
+  assert.equal(logContent.includes("stored-token"), false);
+  assert.equal(logContent.includes("secret-password"), false);
+  assert.equal(logContent.includes("[REDACTED]"), true);
 }
 
 async function requestJson(baseUrl, pathname, { method = "GET", token, body, headers, expectedStatus = 200 } = {}) {
