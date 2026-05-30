@@ -275,14 +275,24 @@ export function createSchedule(data: Database, body: SchedulePatch, actor?: Serv
 export function updateSchedule(data: Database, scheduleId: string, patch: SchedulePatch, actor?: ServerUser) {
   const index = data.schedules.findIndex((schedule) => schedule.id === scheduleId);
   if (index === -1) throw new HttpError(404, "スケジュールが見つかりません");
-  if (actor) assertCanWriteSchedule(data.schedules[index], actor);
+  const currentSchedule = data.schedules[index];
+  if (actor) assertCanWriteSchedule(currentSchedule, actor);
+
+  const safePatch = actor?.role === "User"
+    ? {
+        ...patch,
+        groupId: actor.groupId,
+        ownerUserId: actor.id,
+        isPersonal: true,
+      }
+    : patch;
 
   data.schedules[index] = normalizeSchedule({
-    ...data.schedules[index],
-    ...patch,
+    ...currentSchedule,
+    ...safePatch,
     id: scheduleId,
-    groupId: data.schedules[index].groupId ?? actor?.groupId ?? patch.groupId,
-    ownerUserId: data.schedules[index].ownerUserId ?? patch.ownerUserId,
+    groupId: currentSchedule.groupId ?? actor?.groupId ?? safePatch.groupId,
+    ownerUserId: actor?.role === "User" ? actor.id : currentSchedule.ownerUserId ?? safePatch.ownerUserId,
   });
   return data.schedules[index];
 }
@@ -313,7 +323,8 @@ export function markScheduleRead(data: Database, scheduleId: string, member: str
   const schedule = data.schedules.find((item) => item.id === scheduleId);
   if (!schedule) throw new HttpError(404, "スケジュールが見つかりません");
   if (actor && !canReadSchedule(schedule, actor)) throw new HttpError(403, "権限がありません");
-  if (!schedule.readBy.includes(member)) schedule.readBy.push(member);
+  const readerName = actor?.name ?? member;
+  if (!schedule.readBy.includes(readerName)) schedule.readBy.push(readerName);
   if (actor) schedule.readByUserIds = [...new Set([...(schedule.readByUserIds ?? []), actor.id])];
   return schedule;
 }

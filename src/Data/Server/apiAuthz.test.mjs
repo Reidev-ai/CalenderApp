@@ -19,6 +19,7 @@ try {
   const baseUrl = `http://127.0.0.1:${port}`;
 
   await assertProductionCorsRequiresConfiguredOrigin(baseUrl);
+  await assertForwardedForRateLimitCannotBeSpoofed(baseUrl);
 
   const adminARegister = await requestJson(baseUrl, "/api/auth/register", {
     method: "POST",
@@ -86,6 +87,56 @@ try {
     expectedStatus: 403,
   });
 
+  const assignedSchedule = await requestJson(baseUrl, "/api/schedules", {
+    method: "POST",
+    token: adminA.token,
+    body: buildSchedule({
+      siteName: "Assigned schedule",
+      members: ["User A"],
+      memberIds: [userA.user.id],
+    }),
+    expectedStatus: 201,
+  });
+  const readSchedule = await requestJson(baseUrl, `/api/schedules/${assignedSchedule.schedule.id}/read`, {
+    method: "POST",
+    token: userA.token,
+    body: { member: "Admin A" },
+  });
+  assert.equal(readSchedule.schedule.readBy.includes("Admin A"), false);
+  assert.equal(readSchedule.schedule.readBy.includes("User A"), true);
+  assert.equal(readSchedule.schedule.readByUserIds.includes(userA.user.id), true);
+
+  const personalSchedule = await requestJson(baseUrl, "/api/schedules", {
+    method: "POST",
+    token: userA.token,
+    body: buildSchedule({
+      siteName: "Personal schedule",
+      isPersonal: false,
+      ownerUserId: adminA.user.id,
+      members: ["Admin A"],
+      memberIds: [adminA.user.id],
+    }),
+    expectedStatus: 201,
+  });
+  assert.equal(personalSchedule.schedule.isPersonal, true);
+  assert.equal(personalSchedule.schedule.ownerUserId, userA.user.id);
+
+  const updatedPersonalSchedule = await requestJson(baseUrl, `/api/schedules/${personalSchedule.schedule.id}`, {
+    method: "PUT",
+    token: userA.token,
+    body: {
+      isPersonal: false,
+      ownerUserId: adminA.user.id,
+      members: ["Admin A"],
+      memberIds: [adminA.user.id],
+    },
+  });
+  assert.equal(updatedPersonalSchedule.schedule.isPersonal, true);
+  assert.equal(updatedPersonalSchedule.schedule.ownerUserId, userA.user.id);
+
+  const adminSchedules = await requestJson(baseUrl, "/api/schedules", { token: adminA.token });
+  assert.equal(adminSchedules.schedules.some((schedule) => schedule.id === personalSchedule.schedule.id), false);
+
   const imagePayload = await requestJson(baseUrl, "/api/memo-images", {
     method: "POST",
     token: adminA.token,
@@ -107,7 +158,8 @@ try {
   });
   assert.equal(imageSchedule.schedule.memoImages[0].dataUrl, undefined);
 
-  await requestRaw(baseUrl, imagePayload.image.url, { token: adminA.token, expectedStatus: 200 });
+  const imageResponse = await requestRaw(baseUrl, imagePayload.image.url, { token: adminA.token, expectedStatus: 200 });
+  assert.equal(imageResponse.headers.get("x-content-type-options"), "nosniff");
   await requestRaw(baseUrl, imagePayload.image.url, { token: userA.token, expectedStatus: 404 });
   await requestRaw(baseUrl, imagePayload.image.url, { token: adminB.token, expectedStatus: 404 });
 
@@ -160,13 +212,34 @@ async function assertProductionCorsRequiresConfiguredOrigin(baseUrl) {
   assert.equal(denied.headers.get("access-control-allow-origin"), null);
 }
 
-async function requestJson(baseUrl, pathname, { method = "GET", token, body, expectedStatus = 200 } = {}) {
-  const response = await requestRaw(baseUrl, pathname, { method, token, body, expectedStatus });
+async function assertForwardedForRateLimitCannotBeSpoofed(baseUrl) {
+  const email = "rate-limit@example.test";
+  const realClientIp = "203.0.113.10";
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    await requestJson(baseUrl, "/api/auth/login", {
+      method: "POST",
+      body: { email, password: "wrong-password" },
+      headers: { "X-Forwarded-For": `198.51.100.${attempt}, ${realClientIp}` },
+      expectedStatus: 401,
+    });
+  }
+
+  await requestJson(baseUrl, "/api/auth/login", {
+    method: "POST",
+    body: { email, password: "wrong-password" },
+    headers: { "X-Forwarded-For": `198.51.100.250, ${realClientIp}` },
+    expectedStatus: 429,
+  });
+}
+
+async function requestJson(baseUrl, pathname, { method = "GET", token, body, headers, expectedStatus = 200 } = {}) {
+  const response = await requestRaw(baseUrl, pathname, { method, token, body, headers, expectedStatus });
   return response.json();
 }
 
-async function requestRaw(baseUrl, pathname, { method = "GET", token, body, expectedStatus = 200 } = {}) {
-  const headers = new Headers();
+async function requestRaw(baseUrl, pathname, { method = "GET", token, body, headers: rawHeaders, expectedStatus = 200 } = {}) {
+  const headers = new Headers(rawHeaders);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (body !== undefined) headers.set("Content-Type", "application/json");
 
@@ -190,6 +263,7 @@ async function startApiServer(port, tempDataDir) {
       NODE_ENV: "production",
       CALENDAR_ALLOWED_ORIGINS: "http://allowed.example",
       CALENDAR_DATA_DIR: tempDataDir,
+      CALENDAR_TRUST_PROXY: "1",
       LOG_FILE: logFile,
     },
     stdio: ["ignore", "pipe", "pipe"],

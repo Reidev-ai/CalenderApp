@@ -258,12 +258,10 @@ async function route(method: string, pathname: string, searchParams: URLSearchPa
 
   const readMatch = pathname.match(/^\/api\/schedules\/([^/]+)\/read$/);
   if (readMatch && method === "POST") {
-    const body = await parseJsonBody<{ member?: string }>(req, { maxBytes: defaultJsonBodyMaxBytes });
-    if (!body.member) throw new HttpError(400, "member is required");
-    const member = body.member;
+    await parseJsonBody<Record<string, unknown>>(req, { maxBytes: defaultJsonBodyMaxBytes });
     let schedule: unknown;
     await store.update((data) => {
-      schedule = markScheduleRead(data, readMatch[1], member, actor);
+      schedule = markScheduleRead(data, readMatch[1], actor.name, actor);
     });
     return ok({ schedule });
   }
@@ -397,6 +395,7 @@ async function sendMemoImage(req: IncomingMessage, res: ServerResponse, groupId:
         ...buildCorsHeaders(req.headers.origin),
         "Cache-Control": "private, max-age=3600",
         "Content-Type": getContentType(extension),
+        "X-Content-Type-Options": "nosniff",
       });
       res.end(file);
       return;
@@ -446,9 +445,17 @@ function getLoginRateLimitKey(req: IncomingMessage, email: unknown) {
 
 function getClientIp(req: IncomingMessage) {
   const forwardedFor = process.env.CALENDAR_TRUST_PROXY === "1" ? req.headers["x-forwarded-for"] : undefined;
-  const firstForwardedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : forwardedFor?.split(",")[0];
+  const forwardedIps = parseForwardedFor(forwardedFor);
   const socket = (req as IncomingMessage & { socket?: { remoteAddress?: string } }).socket;
-  return (firstForwardedIp ?? socket?.remoteAddress ?? "unknown").trim();
+  return (forwardedIps[forwardedIps.length - 1] ?? socket?.remoteAddress ?? "unknown").trim();
+}
+
+function parseForwardedFor(value: string | string[] | undefined) {
+  const rawValue = Array.isArray(value) ? value.join(",") : value ?? "";
+  return rawValue
+    .split(",")
+    .map((ip) => ip.trim())
+    .filter(Boolean);
 }
 
 function assertLoginAllowed(key: string) {
