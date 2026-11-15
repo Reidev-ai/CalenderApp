@@ -28,6 +28,12 @@ async function emit(status) {
 }
 
 async function counts() { return app.evaluate(() => globalThis.testUpdateActions); }
+async function remainWaitingForRestart() {
+  await page.getByRole("button", { name: "アプリを再起動して更新", exact: true }).waitFor();
+  // Give effects/timeouts time to run, so the former automatic restart fails this test.
+  await page.waitForTimeout(300);
+  assert.equal((await counts()).install, 0);
+}
 
 try {
   app = await _electron.launch({ executablePath: require("electron"), args: [resolve(".")], env, timeout: 45000 });
@@ -60,10 +66,10 @@ try {
     await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 840), width);
     await page.screenshot({ path: join(artifacts, `available-${width}.png`) });
     const bounds = await page.locator(".desktop-update-button").boundingBox();
-    const viewport = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth }));
-    assert.equal(bounds.width, 104);
+    const viewport = await page.evaluate(() => ({ width: innerWidth, scrollWidth: document.documentElement.scrollWidth, paddingRight: parseFloat(getComputedStyle(document.querySelector('.topbar')).paddingRight) }));
+    assert.equal(bounds.width, 160);
     assert.equal(bounds.height, 28);
-    assert.ok(bounds.x + bounds.width <= viewport.width);
+    assert.ok(bounds.x + bounds.width <= viewport.width - viewport.paddingRight + 0.5);
     assert.ok(viewport.scrollWidth <= viewport.width);
   }
   await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 840));
@@ -82,10 +88,27 @@ try {
   await page.getByRole("button", { name: "新規作成", exact: true }).first().click();
   await page.getByLabel("現場名", { exact: true }).fill("ダウンロード中の編集内容");
   await emit({ phase: "downloaded", version: "0.1.2", percent: 100 });
-  await page.getByRole("button", { name: "保存後に更新", exact: true }).waitFor();
+  await remainWaitingForRestart();
   assert.deepEqual(await counts(), { download: 1, install: 0 });
   await page.screenshot({ path: join(artifacts, "waiting-for-save.png") });
+  await page.getByRole("button", { name: "アプリを再起動して更新", exact: true }).click();
+  assert.deepEqual(await counts(), { download: 1, install: 0 });
+  assert.equal(await page.getByLabel("現場名", { exact: true }).inputValue(), "ダウンロード中の編集内容");
   await page.getByRole("button", { name: "保存", exact: true }).click();
+  await remainWaitingForRestart();
+  for (const width of [1280, 1120, 980]) {
+    await app.evaluate(({ BrowserWindow }, width) => BrowserWindow.getAllWindows()[0].setSize(width, 840), width);
+    const fits = await page.locator(".desktop-update-button").evaluate(button => {
+      const label = button.querySelector("span").getBoundingClientRect();
+      const bounds = button.getBoundingClientRect();
+      const padding = parseFloat(getComputedStyle(button.closest('.topbar')).paddingRight);
+      return label.left >= bounds.left && label.right <= bounds.right && bounds.right <= innerWidth - padding + 0.5 && document.documentElement.scrollWidth <= innerWidth;
+    });
+    assert.ok(fits, `Restart button text must fit at ${width}px`);
+    await page.screenshot({ path: join(artifacts, `ready-${width}.png`) });
+  }
+  await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setSize(1280, 840));
+  await page.getByRole("button", { name: "アプリを再起動して更新", exact: true }).click();
   await page.getByRole("button", { name: "更新中", exact: true }).waitFor();
   assert.deepEqual(await counts(), { download: 1, install: 1 });
   await emit({ phase: "error", version: "0.1.2", message: "retry" });
@@ -94,8 +117,17 @@ try {
   await emit({ phase: "error", version: "0.1.2", message: "offline" });
   await page.getByRole("button", { name: "更新を再試行", exact: true }).waitFor();
   assert.deepEqual(await counts(), { download: 2, install: 1 });
+  await page.getByRole("button", { name: "更新を再試行", exact: true }).click();
+  await emit({ phase: "downloaded", version: "0.1.2", percent: 100 });
+  await page.getByRole("button", { name: "アプリを再起動して更新", exact: true }).waitFor();
+  await page.waitForTimeout(300);
+  assert.deepEqual(await counts(), { download: 3, install: 1 });
+  await page.reload();
+  await page.getByRole("button", { name: "アプリを再起動して更新", exact: true }).waitFor();
+  await page.waitForTimeout(300);
+  assert.deepEqual(await counts(), { download: 3, install: 1 });
   assert.deepEqual(errors, []);
-  console.log("PASS: compact update UI, hidden when current/offline, progress, unsaved-edit guard, automatic install after save, retry");
+  console.log("PASS: update UI at 3 widths, progress, download-only first click, no automatic restart after download/save/retry/remount, explicit restart action, unsaved-edit guard");
 } catch (error) {
   if (page && !page.isClosed()) {
     await page.screenshot({ path: join(artifacts, "failure.png") });

@@ -3279,7 +3279,7 @@ button:disabled {
   justify-content: center;
   flex: 0 0 auto;
   gap: 4px;
-  width: 104px;
+  width: 160px;
   height: 28px;
   padding: 0 7px;
   border: 1px solid #a7cbb9;
@@ -3295,6 +3295,12 @@ button:disabled {
 .desktop-update-button:disabled {
   cursor: default;
   opacity: 0.75;
+}
+
+@media (min-width: 1111px) and (max-width: 1200px) {
+  .topbar:has(.desktop-update-button) .search-box { width: 220px; }
+  .topbar:has(.desktop-update-button) .search-box input { min-width: 0; }
+  .topbar:has(.desktop-update-button) .search-box svg { flex-shrink: 0; }
 }
 
 .desktop-update-spinner {

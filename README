@@ -7,14 +7,18 @@
 
 ## Windowsで使う
 
-[GitHub ReleasesからWindows用インストーラーをダウンロード](https://github.com/Reidev-ai/CalenderApp/releases/download/v0.1.4/Calender-0.1.4-setup.exe)できます。
+[Windows x64のZIP版をダウンロード](https://github.com/Reidev-ai/CalenderApp/releases/download/v0.1.5/Calender-0.1.5-windows-x64.zip)し、新しいフォルダへ「すべて展開」して `Calender.exe` を起動できます。
+ZIP内から直接起動したり、EXEだけを取り出したりせず、すべてのファイルを展開してください。
+[セットアップ版](https://github.com/Reidev-ai/CalenderApp/releases/download/v0.1.5/Calender-0.1.5-setup.exe)も用意しています。
+一部のPCで「Calenderが終了できません」と表示されるセットアップの問題は調査中です。その場合はZIP版を使用してください。
 
-現在の版は `0.1.4` です。月別Excel出力、画像／Excelの実プレビュー、複数の状態保存と差分表示を含みます。
-ローカルのビルド先は `release/Calender-0.1.4-setup.exe` です。
+現在の版は `0.1.5` です。ダウンロード後の自動再起動を廃止し、利用者が「アプリを再起動して更新」を押した時だけ実行するようにしました。
+月別Excel出力、画像／Excelの実プレビュー、複数の状態保存と差分表示も含みます。
+ローカルのセットアップビルド先は `release/Calender-0.1.5-setup.exe` です。
 起動後は右上のメンバー管理から人を登録し、予定のメンバー欄で選択します。
 Node.js、sqlite3コマンド、APIサーバー、さくらサーバー、SSHトンネルは不要です。
 公開版 `0.1.2` はWindows実機で基本動作を確認済みですが、下記の既知の問題があります。
-`0.1.4` の追加機能はMac上のElectronで検証済みです。Windows実機での追加機能と実際の自動更新の確認は未実施です。
+`0.1.5` の更新操作はMac上のElectronで検証済みです。Windows実機での追加機能と実際の更新インストールの確認は未実施です。
 コード署名証明書はまだ設定していません。
 
 この版は1台のPCで全員分を管理する方式です。各メンバーの端末との同期や、
@@ -83,11 +87,14 @@ npm run test:comparison-ui
 
 インストール済みWindows版は起動時と起動中の6時間ごとに、新しい安定版があるか確認します。
 新版がある時だけトップバー右端に小さな「更新」ボタンを表示します。
-クリック後はダウンロードの進捗を表示し、完了すると自動でインストール・再起動します。
-クリック前にダウンロード・インストールしたり、単にアプリを閉じただけで更新したりはしません。
+クリック後はダウンロードの進捗を表示し、完了すると「アプリを再起動して更新」に変わります。
+ダウンロード完了だけではインストール・再起動せず、利用者がこのボタンを押した時だけ実行します。
+単にアプリを閉じただけでも更新しません。
+この操作は `0.1.5` からです。`0.1.4` 以前から最初に切り替える時は、旧版の更新ボタンを使わず、アプリを閉じて新しいZIP版を別フォルダへ展開してください。
+以前の版はその版の動作で更新を開始するため、ダウンロード後に自動再起動する場合があります。
 
 未保存の編集や画像送信中は開始を止めます。ダウンロード中に編集を始めた場合は、
-保存・キャンセルするまで「保存後に更新」と表示して再起動を待ちます。
+保存・キャンセルした後も、自動では再起動しません。改めて「アプリを再起動して更新」を押してください。
 インストール前に進行中の保存を待ち、DBの控えを作成します。失敗した場合は更新せず再試行できます。
 インターネットに接続できない場合もシフト管理はそのまま利用できます。
 シフトや添付画像をGitHubへ送信することはありません。
@@ -98,7 +105,7 @@ npm run test:comparison-ui
 1. `npm version patch --no-git-tag-version` などで `package.json` とロックファイルのバージョンを更新します。
 2. `npm run test:desktop`、`npm run test:updates`、`npm run test:desktop-ui`、`npm run test:updates-ui` を実行します。
 3. `npm run desktop:dist:win` でWindows x64版を生成し、Windows実機で動作を検証します。このコマンドは公開せずビルドだけ行います。
-4. ビルド元のソースをコミット・プッシュし、同じコミットにタグ（例: `v0.1.4`）を付けます。Releaseに対応する `Calender-0.1.4-setup.exe`、その `.blockmap`、`latest.yml` の3ファイルを添付し、すべて揃ってから公開します。
+4. ビルド元のソースをコミット・プッシュし、同じコミットにタグ（例: `v0.1.5`）を付けます。Releaseに対応する `Calender-0.1.5-setup.exe`、その `.blockmap`、`latest.yml` を添付します。ZIP版も同じ `win-unpacked` を `electron-builder --win zip --x64 --prepackaged release/win-unpacked --publish never` で圧縮し、すべて揃ってから公開します。
 
 安定版だけを検出し、Draft/Prereleaseは配信対象にしません。古い版への自動ダウングレードも行いません。
 取得ファイルのSHA-512整合性は `electron-updater` が検証します。

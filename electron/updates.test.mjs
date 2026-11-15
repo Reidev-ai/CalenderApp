@@ -46,7 +46,7 @@ test("checks do not download or install; stable updates only with downgrade prev
   assert.equal(updater.disableWebInstaller, true);
 });
 
-test("download progress, repeated clicks, backup, and silent restart", async () => {
+test("download waits for explicit installation, then backs up and restarts once", async () => {
   let backedUp = false;
   const { manager, updater } = setup(async () => { backedUp = true; });
   await manager.check();
