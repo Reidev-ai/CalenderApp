@@ -68,7 +68,10 @@ declare module "node:fs/promises" {
 }
 
 declare module "node:crypto" {
+  export function randomBytes(size: number): { toString(encoding: "hex"): string };
   export function randomUUID(): string;
+  export function scryptSync(password: string, salt: string, keylen: number): Uint8Array;
+  export function timingSafeEqual(left: Uint8Array, right: Uint8Array): boolean;
   export function createHash(algorithm: string): {
     update(data: string): {
       digest(encoding: "hex"): string;

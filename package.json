@@ -1,11 +1,24 @@
 {
   "name": "calender",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.4",
   "type": "module",
+  "main": "dist-electron/electron/main.js",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "desktop:build": "tsc -b && vite build --base=./ && tsc -p tsconfig.electron.json",
+    "desktop:dev": "tsc -p tsconfig.electron.json && concurrently -k \"vite --host 127.0.0.1\" \"wait-on http://127.0.0.1:5173/CalenderApp/ && cross-env ELECTRON_RENDERER_URL=http://127.0.0.1:5173/CalenderApp/ electron .\"",
+    "desktop:start": "npm run desktop:build && electron .",
+    "desktop:dist:win": "npm run desktop:build && electron-builder --win --x64 --publish never",
+    "test:updates": "tsc -p tsconfig.electron.json && node --test electron/updates.test.mjs",
+    "test:updates-ui": "npm run desktop:build && node electron/updates.smoke.mjs",
+    "test:desktop": "tsc -p tsconfig.electron.json && node --test electron/localCalendar.test.mjs",
+    "test:desktop-ui": "npm run desktop:build && node electron/desktop.smoke.mjs",
+    "test:excel": "node --experimental-strip-types --test src/utils/exportMonthlyWorkbook.test.mjs",
+    "test:comparison": "node --experimental-strip-types --test src/utils/compareSchedules.test.mjs",
+    "test:comparison-ui": "npm run desktop:build && node electron/comparison.smoke.mjs",
+    "test:excel-ui": "npm run desktop:build && node electron/excel.smoke.mjs",
     "preview": "vite preview",
     "server:dev": "node --experimental-strip-types src/Data/Server/server.ts",
     "server:dev:host": "HOST=0.0.0.0 node --experimental-strip-types src/Data/Server/server.ts",
@@ -14,16 +27,75 @@
     "backup:data": "node --experimental-strip-types src/Data/Server/backup.ts",
     "backup:schedule": "node --experimental-strip-types src/Data/Server/backupScheduler.ts"
   },
+  "build": {
+    "appId": "com.reidevai.calender",
+    "productName": "Calender",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/electron/**/*",
+      "dist-electron/src/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "node_modules/sql.js/dist/sql-wasm.wasm",
+        "to": "sql-wasm.wasm"
+      }
+    ],
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "Reidev-ai",
+        "repo": "CalenderApp",
+        "private": false,
+        "releaseType": "release"
+      }
+    ],
+    "win": {
+      "verifyUpdateCodeSignature": true,
+      "target": [
+        "nsis"
+      ],
+      "artifactName": "${productName}-${version}-setup.${ext}"
+    },
+    "nsis": {
+      "deleteAppDataOnUninstall": false,
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
   "dependencies": {
-    "@types/react": "^19.2.0",
-    "@types/react-dom": "^19.2.0",
-    "@vitejs/plugin-react": "^5.1.0",
+    "electron-updater": "^6.8.9",
+    "exceljs": "^4.4.0",
     "html-to-image": "^1.11.13",
     "jszip": "^3.10.1",
     "lucide-react": "^0.554.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
+    "sql.js": "^1.14.2"
+  },
+  "overrides": {
+    "exceljs": {
+      "uuid": "11.1.1"
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@types/sql.js": "^1.4.11",
+    "@vitejs/plugin-react": "^5.2.0",
+    "concurrently": "^10.0.3",
+    "cross-env": "^10.1.0",
+    "electron": "^42.4.1",
+    "electron-builder": "^26.15.3",
+    "playwright": "^1.64.0",
     "typescript": "^5.9.3",
-    "vite": "^7.2.0"
+    "vite": "^7.3.7",
+    "wait-on": "^9.0.10"
   }
 }

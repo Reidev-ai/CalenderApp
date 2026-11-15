@@ -1,13 +1,23 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import type { Workbook } from "exceljs";
 import { toPng } from "html-to-image";
 import JSZip from "jszip";
-import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GripVertical, Menu, MessageSquare, PanelRightOpen, Plus, RotateCcw, Search, Settings, SlidersHorizontal, Trash2 } from "lucide-react";
+import { Bell, CalendarDays, Check, ChevronLeft, ChevronRight, Download, GitCompareArrows, GripVertical, Menu, MessageSquare, PanelRightOpen, Plus, RotateCcw, Search, Settings, SlidersHorizontal, Trash2, Users } from "lucide-react";
+import { isDesktopApp, localSession, requestDesktop } from "./desktop";
+import { LocalMembersPanel } from "./ui/component/LocalMembersPanel";
+import { DesktopUpdateButton } from "./ui/component/DesktopUpdateButton";
 import { mockSchedules } from "./mock/mockSchedules";
 import type { AuthSession, AuthUser, CalendarViewMode, JoinRequest, MemoImage, Schedule, SidebarMode, Tag, TaskCellPriorityItem, UserRole } from "./types";
 import { LoginView } from "./ui/Share/login/LoginView";
-import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop } from "./ui/component/CalendarViews";
+import { CalendarDayDesktop, CalendarMonthDesktop, CalendarWeekDesktop, getScheduleSegmentForDate } from "./ui/component/CalendarViews";
 import { SideBar } from "./ui/component/SideBar";
 import { getMonthGridDays, getWeekDays, minutesToTime, timeToMinutes, toDateKey } from "./utils/time";
+import { createMonthlyWorkbook } from "./utils/exportMonthlyWorkbook";
+import { createWorkbookPreview } from "./utils/workbookPreview";
+import { CalendarExportPreview, type CalendarPreviewData } from "./ui/component/CalendarExportPreview";
+import { ScheduleComparisonPanel } from "./ui/component/ScheduleComparisonPanel";
+import type { BaselineHistory, CalendarComparison, ScheduleBaseline } from "./comparisonTypes";
+import { compareSchedules, projectScheduleComparison } from "./utils/compareSchedules";
 
 const fallbackMaxVisibleColumns = 3;
 const currentMember = "佐藤";
@@ -20,6 +30,8 @@ const memberDisplayNameStorageKey = "calender-member-display-names-v1";
 const taskCellPriorityStorageKey = "calender-task-cell-priority-v1";
 const mobileSidebarTopbarHeight = 64;
 type CaptureTarget = "current" | "members";
+type CaptureFormat = "png" | "xlsx";
+type CapturePreviewData = Extract<CalendarPreviewData, { format: "png" }> | (Extract<CalendarPreviewData, { format: "xlsx" }> & { workbook: Workbook });
 type SearchSort = "dateAsc" | "dateDesc" | "updatedDesc" | "siteName";
 const defaultTaskCellPriority: TaskCellPriorityItem[] = [
   { id: "time", label: "開始予定時間" },
@@ -69,18 +81,22 @@ export default function App() {
   }, []);
 
   const [authSession, setAuthSession] = useState<AuthSession | null>(() => {
+    if (isDesktopApp) return localSession;
     const saved = localStorage.getItem(authStorageKey);
     return saved ? (JSON.parse(saved) as AuthSession) : null;
   });
   const [schedules, setSchedules] = useState<Schedule[]>(() => {
+    if (isDesktopApp) return [];
     const saved = localStorage.getItem(storageKey);
     return saved ? (JSON.parse(saved) as Schedule[]) : mockSchedules;
   });
   const [trashSchedules, setTrashSchedules] = useState<Schedule[]>(() => {
+    if (isDesktopApp) return [];
     const saved = localStorage.getItem(trashStorageKey);
     return saved ? (JSON.parse(saved) as Schedule[]) : [];
   });
   const [tags, setTags] = useState<Tag[]>(() => {
+    if (isDesktopApp) return defaultTags;
     const saved = localStorage.getItem(tagStorageKey);
     return saved ? (JSON.parse(saved) as Tag[]) : defaultTags;
   });
@@ -94,13 +110,19 @@ export default function App() {
   const [captureRendering, setCaptureRendering] = useState(false);
   const [captureLoading, setCaptureLoading] = useState(false);
   const [captureTarget, setCaptureTarget] = useState<CaptureTarget>("current");
+  const [captureFormat, setCaptureFormat] = useState<CaptureFormat>("png");
   const [captureSchedules, setCaptureSchedules] = useState<Schedule[] | null>(null);
+  const [captureComparison, setCaptureComparison] = useState<CalendarComparison | undefined>();
+  const [captureIncludeComparison, setCaptureIncludeComparison] = useState(true);
   const [selectedCaptureUserIds, setSelectedCaptureUserIds] = useState<string[]>([]);
+  const [capturePreviewMemberId, setCapturePreviewMemberId] = useState("");
+  const [capturePreviewRetry, setCapturePreviewRetry] = useState(0);
+  const [capturePreview, setCapturePreview] = useState<{ input: object; data?: CapturePreviewData; error?: string } | null>(null);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [sidebarMode, setSidebarMode] = useState<SidebarMode>("edit");
   const [viewMode, setViewMode] = useState<CalendarViewMode>("month");
   const [overlapList, setOverlapList] = useState<Schedule[]>([]);
-  const [anchorDate, setAnchorDate] = useState(() => new Date("2026-05-11T09:00:00"));
+  const [anchorDate, setAnchorDate] = useState(() => isDesktopApp ? new Date() : new Date("2026-05-11T09:00:00"));
   const [selectedDateKey, setSelectedDateKey] = useState<string | null>(null);
   const role = authSession?.user.role ?? "Guest";
   const [searchQuery, setSearchQuery] = useState("");
@@ -115,6 +137,14 @@ export default function App() {
   const [apiMessage, setApiMessage] = useState("");
   const [offlineMode, setOfflineMode] = useState(false);
   const [dirtyEditor, setDirtyEditor] = useState(false);
+  const [baselineHistory, setBaselineHistory] = useState<BaselineHistory>({ baselines: [], activeBaselineId: null });
+  const baseline: ScheduleBaseline | null = baselineHistory.baselines.find((item) => item.id === baselineHistory.activeBaselineId) ?? null;
+  const [baselineLoaded, setBaselineLoaded] = useState(false);
+  const [baselineSaving, setBaselineSaving] = useState(false);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [comparisonFocusId, setComparisonFocusId] = useState<string | null>(null);
+  const [comparisonError, setComparisonError] = useState("");
+  const [comparisonEnabled, setComparisonEnabled] = useState(() => localStorage.getItem("calender-comparison-visible-v1") !== "false");
   const [tagFilters, setTagFilters] = useState<string[]>([]);
   const [maxVisibleColumns, setMaxVisibleColumns] = useState(fallbackMaxVisibleColumns);
   const [taskCellPriority, setTaskCellPriority] = useState<TaskCellPriorityItem[]>(loadTaskCellPriority);
@@ -122,6 +152,8 @@ export default function App() {
   const now = useCurrentTime();
   const currentMinute = now.getHours() * 60 + now.getMinutes();
   const captureStageRef = useRef<HTMLDivElement | null>(null);
+  const captureQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const previousCaptureUserIdsRef = useRef<string[]>([]);
   const weekDates = useMemo(() => getWeekDays(anchorDate), [anchorDate]);
   const monthDates = useMemo(() => getMonthGridDays(anchorDate), [anchorDate]);
   const selectedSchedule = draftNewSchedule ?? schedules.find((schedule) => schedule.id === selectedScheduleId) ?? null;
@@ -130,16 +162,25 @@ export default function App() {
     [groupUsers, memberDisplayNames],
   );
   const displayGroupMembers = useMemo(
-    () => mergeMemberNames(authSession?.user.name ? [memberDisplayNames[authSession.user.id]?.trim() || authSession.user.name] : [], displayGroupUsers.map((user) => user.name), groupMembers),
+    () => mergeMemberNames(!isDesktopApp && authSession?.user.name ? [memberDisplayNames[authSession.user.id]?.trim() || authSession.user.name] : [], displayGroupUsers.map((user) => user.name), groupMembers),
     [authSession?.user.id, authSession?.user.name, displayGroupUsers, groupMembers, memberDisplayNames],
   );
-  const allMembers = useMemo(() => [...new Set(schedules.flatMap((schedule) => schedule.members))].sort(), [schedules]);
+  const allMembers = useMemo(() => [...new Set([...schedules.flatMap((schedule) => schedule.members), ...displayGroupMembers])].sort(), [schedules, displayGroupMembers]);
   const addressCandidates = useMemo(() => uniqueStrings(schedules.map((schedule) => schedule.address)), [schedules]);
   const allTags = useMemo(() => tags, [tags]);
   const visibleSchedules = useMemo(
     () => filterSchedulesByUi(schedules, role, authSession?.user.id ?? "", authSession?.user.name ?? currentMember, authSession?.user.groupId ?? "", searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters),
     [authSession?.user.groupId, authSession?.user.id, authSession?.user.name, schedules, role, searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters],
   );
+  const baselineVisibleSchedules = useMemo(() => filterSchedulesByUi(baseline?.schedules ?? [], role, authSession?.user.id ?? "", authSession?.user.name ?? currentMember, authSession?.user.groupId ?? "", searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters), [baseline, role, authSession?.user.id, authSession?.user.name, authSession?.user.groupId, searchQuery, memberFilters, tagFilters, scopeFilters, statusFilters]);
+  const scheduleChanges = useMemo(() => compareSchedules(baseline, schedules, tags), [baseline, schedules, tags]);
+  const calendarComparisonView = useMemo(() => comparisonEnabled && baseline
+    ? projectScheduleComparison(visibleSchedules, scheduleChanges, baseline.savedAt, new Set(baselineVisibleSchedules.map((schedule) => schedule.id)), baseline.name)
+    : { schedules: visibleSchedules, comparison: undefined }, [comparisonEnabled, baseline, visibleSchedules, baselineVisibleSchedules, scheduleChanges]);
+  const displayedOverlapList = useMemo(() => {
+    const current = new Map(calendarComparisonView.schedules.map((schedule) => [schedule.id, schedule]));
+    return overlapList.flatMap((schedule) => { const updated = current.get(schedule.id); return updated ? getScheduleSegmentForDate(updated, schedule.date) : []; });
+  }, [calendarComparisonView.schedules, overlapList]);
   const unreadSchedules = useMemo(
     () => visibleSchedules.filter((schedule) => !(schedule.readByUserIds ?? []).includes(authSession?.user.id ?? "") && !schedule.readBy.includes(authSession?.user.name ?? currentMember)),
     [authSession?.user.id, authSession?.user.name, visibleSchedules],
@@ -155,12 +196,17 @@ export default function App() {
   const searchActive = searchQuery.trim() !== "" || memberFilters.length > 0 || tagFilters.length > 0 || scopeFilters.length > 0 || statusFilters.length > 0;
 
   useEffect(() => {
+    if (isDesktopApp) return;
     if (authSession) {
       localStorage.setItem(authStorageKey, JSON.stringify(authSession));
     } else {
       localStorage.removeItem(authStorageKey);
     }
   }, [authSession]);
+
+  useEffect(() => {
+    if (isDesktopApp) localStorage.setItem("calender-comparison-visible-v1", String(comparisonEnabled));
+  }, [comparisonEnabled]);
 
   useEffect(() => {
     if (!authSession?.user.id) {
@@ -187,11 +233,14 @@ export default function App() {
 
   useEffect(() => {
     const selectableUsers = groupUsers.filter((user) => user.role !== "Guest");
+    const nextIds = selectableUsers.map((user) => user.id);
+    const previousIds = previousCaptureUserIdsRef.current;
     setSelectedCaptureUserIds((current) => {
-      const validIds = new Set(selectableUsers.map((user) => user.id));
+      const validIds = new Set(nextIds);
       const kept = current.filter((id) => validIds.has(id));
-      return kept.length > 0 ? kept : selectableUsers.map((user) => user.id);
+      return previousIds.every((id) => current.includes(id)) ? nextIds : kept;
     });
+    previousCaptureUserIdsRef.current = nextIds;
   }, [groupUsers]);
 
   useEffect(() => {
@@ -214,6 +263,10 @@ export default function App() {
           ".capture-panel",
           ".tag-context-menu",
           ".context-menu-backdrop",
+          ".desktop-update-button",
+          ".comparison-panel",
+          ".comparison-overlay",
+          ".calendar-comparison-actions",
         ].join(","),
       )) return;
 
@@ -229,25 +282,32 @@ export default function App() {
     setApiMessage("");
 
     try {
-      const authPayload = await getApiJson<{ user: AuthUser }>("/api/auth/me");
+      const authPayload = isDesktopApp ? { user: localSession.user } : await getApiJson<{ user: AuthUser }>("/api/auth/me");
       setAuthSession((current) => current ? { ...current, user: authPayload.user } : current);
       const groupId = authPayload.user.groupId;
-      const [schedulePayload, trashPayload, tagPayload] = await Promise.all([
+      const [schedulePayload, trashPayload, tagPayload, baselinePayload] = await Promise.all([
         getApiJson<{ schedules: Schedule[] }>("/api/schedules"),
         getApiJson<{ schedules: Schedule[] }>("/api/trash"),
         getApiJson<{ tags: Tag[] }>("/api/tags"),
+        isDesktopApp ? requestDesktop<BaselineHistory>("GET", "/api/baselines") : Promise.resolve({ baselines: [], activeBaselineId: null }),
       ]);
       void refreshGroupMembers(groupId);
-      const cache = loadOfflineCache(groupId);
+      const cache = isDesktopApp ? null : loadOfflineCache(groupId);
       const nextSchedules = cache ? mergeLatestSchedules(schedulePayload.schedules, cache.schedules) : schedulePayload.schedules;
       const nextTrashSchedules = cache ? mergeLatestSchedules(trashPayload.schedules, cache.trashSchedules) : trashPayload.schedules;
       setSchedules(nextSchedules);
       setTrashSchedules(nextTrashSchedules);
       setTags(tagPayload.tags);
+      setBaselineHistory(baselinePayload);
+      setBaselineLoaded(true);
       setSelectedScheduleId((current) => current && nextSchedules.some((schedule) => schedule.id === current) ? current : null);
       setOfflineMode(false);
-      saveOfflineCache(groupId, nextSchedules, nextTrashSchedules, tagPayload.tags);
+      if (!isDesktopApp) saveOfflineCache(groupId, nextSchedules, nextTrashSchedules, tagPayload.tags);
     } catch (error) {
+      if (isDesktopApp) {
+        setApiMessage(error instanceof Error ? error.message : "PCのデータを読み込めませんでした");
+        return;
+      }
       const groupId = authSession.user.groupId;
       const cache = loadOfflineCache(groupId);
       if (cache) {
@@ -265,7 +325,7 @@ export default function App() {
 
   async function refreshGroupMembers(groupId: string) {
     setGroupMembersError("");
-    const fallbackMembers = authSession?.user.name ? [authSession.user.name] : [];
+    const fallbackMembers = !isDesktopApp && authSession?.user.name ? [authSession.user.name] : [];
     setGroupMembers((current) => mergeMemberNames(fallbackMembers, current));
 
     try {
@@ -273,6 +333,10 @@ export default function App() {
       setGroupUsers(payload.users);
       setGroupMembers(mergeMemberNames(fallbackMembers, payload.users.map((user) => user.name)));
     } catch (error) {
+      if (isDesktopApp) {
+        setGroupMembersError(error instanceof Error ? error.message : "メンバーを読み込めませんでした");
+        return;
+      }
       try {
         const payload = await getApiJson<{ joinRequests: JoinRequest[] }>(`/api/join-requests?groupId=${encodeURIComponent(groupId)}`);
         const approvedMembers = payload.joinRequests
@@ -330,14 +394,17 @@ export default function App() {
   }
 
   useEffect(() => {
+    if (isDesktopApp) return;
     localStorage.setItem(storageKey, JSON.stringify(schedules));
   }, [schedules]);
 
   useEffect(() => {
+    if (isDesktopApp) return;
     localStorage.setItem(trashStorageKey, JSON.stringify(trashSchedules));
   }, [trashSchedules]);
 
   useEffect(() => {
+    if (isDesktopApp) return;
     localStorage.setItem(tagStorageKey, JSON.stringify(tags));
   }, [tags]);
 
@@ -356,6 +423,12 @@ export default function App() {
   }
 
   function openSchedule(schedule: Schedule) {
+    const mark = calendarComparisonView.comparison?.marks[schedule.id];
+    if (mark?.readonly) {
+      setComparisonFocusId(mark.sourceId);
+      setComparisonOpen(true);
+      return;
+    }
     if (!confirmDiscardIfDirty()) return;
     setDraftNewSchedule(null);
     setSelectedScheduleId(schedule.id);
@@ -380,11 +453,17 @@ export default function App() {
   }
 
   function moveScheduleByDrag(schedule: Schedule, nextDate: string, nextStartMinutes: number) {
-    if (role !== "Admin" && !(role === "User" && schedule.isPersonal && schedule.ownerUserId === authSession?.user.id)) return;
+    if (role !== "Admin" && !(role === "User" && schedule.isPersonal && schedule.ownerUserId === authSession?.user.id)) {
+      setApiMessage("このタスクを移動する権限がありません");
+      return;
+    }
     if (!confirmDiscardIfDirty()) return;
 
     const original = schedules.find((item) => item.id === schedule.id);
-    if (!original) return;
+    if (!original) {
+      setApiMessage("移動対象のタスクが見つかりません");
+      return;
+    }
 
     const durationMinutes = getScheduleDurationMinutes(original);
     const nextStart = Math.max(0, Math.min(1439, nextStartMinutes));
@@ -399,7 +478,7 @@ export default function App() {
       endTime: minutesToTime(endMinutes),
     };
 
-    void saveSchedule(nextSchedule);
+    void saveSchedule(nextSchedule).catch(() => undefined);
   }
 
   async function saveSchedule(schedule: Schedule) {
@@ -432,6 +511,7 @@ export default function App() {
       setApiMessage("");
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "スケジュールを保存できませんでした");
+      throw error;
     }
   }
 
@@ -489,7 +569,7 @@ export default function App() {
       readBy: [],
       readByUserIds: [],
     };
-    void saveSchedule(duplicated);
+    void saveSchedule(duplicated).catch(() => undefined);
   }
 
   function clearSelectedSchedule() {
@@ -660,41 +740,92 @@ export default function App() {
     setSelectedDateKey(toDateKey(today));
   }
 
-  async function renderCalendarImage(schedulesForCapture: Schedule[]) {
-    setCaptureSchedules(schedulesForCapture);
-    setCaptureRendering(true);
-    await nextAnimationFrame();
-    await nextAnimationFrame();
-
-    if (!captureStageRef.current) throw new Error("画像出力の準備ができませんでした");
-
-    return toPng(captureStageRef.current, {
-      width: 1920,
-      height: 1080,
-      pixelRatio: 1,
-      cacheBust: true,
-      backgroundColor: "#ffffff",
+  const renderCalendarImage = useCallback((schedulesForCapture: Schedule[], isCurrent: () => boolean = () => true, comparisonForCapture?: CalendarComparison) => {
+    // Preview refreshes and multi-member downloads share one hidden render stage.
+    const render = captureQueueRef.current.then(async () => {
+      if (!isCurrent()) throw new Error("プレビューの作成を中止しました");
+      setCaptureSchedules(schedulesForCapture);
+      setCaptureComparison(comparisonForCapture);
+      setCaptureRendering(true);
+      try {
+        await document.fonts.ready;
+        await nextAnimationFrame();
+        await nextAnimationFrame();
+        if (!isCurrent()) throw new Error("プレビューの作成を中止しました");
+        if (!captureStageRef.current) throw new Error("画像出力の準備ができませんでした");
+        return await toPng(captureStageRef.current, { width: 1920, height: 1080, pixelRatio: 1, cacheBust: true, backgroundColor: "#ffffff" });
+      } finally {
+        setCaptureRendering(false);
+        setCaptureSchedules(null);
+        setCaptureComparison(undefined);
+      }
     });
-  }
+    captureQueueRef.current = render.catch(() => undefined);
+    return render;
+  }, [viewMode, anchorDate, taskCellPriority, maxVisibleColumns, currentMinute, role, authSession?.user.id, authSession?.user.name, selectedDateKey]);
+
+  const captureMembers = useMemo(() => groupUsers.filter((user) => user.role !== "Guest"), [groupUsers]);
+  const captureExportUsers = useMemo(() => captureMembers.filter((user) => selectedCaptureUserIds.includes(user.id)), [captureMembers, selectedCaptureUserIds]);
+  const previewMember = captureExportUsers.find((user) => user.id === capturePreviewMemberId) ?? captureExportUsers[0];
+  const getCaptureView = useCallback((users?: AuthUser[]) => {
+    const matches = (schedule: Schedule) => !users || users.some((user) => schedule.memberIds?.includes(user.id) || schedule.members.includes(user.name));
+    const current = visibleSchedules.filter(matches);
+    return captureIncludeComparison && baseline
+      ? projectScheduleComparison(current, scheduleChanges, baseline.savedAt, new Set(baselineVisibleSchedules.filter(matches).map((schedule) => schedule.id)), baseline.name)
+      : { schedules: current, comparison: undefined };
+  }, [visibleSchedules, baselineVisibleSchedules, captureIncludeComparison, baseline, scheduleChanges]);
+  const capturePreviewView = useMemo(() => {
+    if (captureTarget === "current") return getCaptureView();
+    const users = captureFormat === "xlsx" ? captureExportUsers : previewMember ? [previewMember] : [];
+    return getCaptureView(users);
+  }, [captureTarget, captureFormat, captureExportUsers, previewMember, getCaptureView]);
+  const capturePreviewInput = useMemo(() => ({
+    format: captureFormat, schedules: capturePreviewView.schedules, comparison: capturePreviewView.comparison, anchorDate, renderCalendarImage,
+    valid: captureTarget === "current" || captureExportUsers.length > 0, retry: capturePreviewRetry,
+  }), [captureFormat, capturePreviewView, anchorDate, renderCalendarImage, captureTarget, captureExportUsers.length, capturePreviewRetry]);
+
+  useEffect(() => {
+    if (!capturePanelOpen) { setCapturePreview(null); return; }
+    if (!capturePreviewInput.valid) return;
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          let data: CapturePreviewData;
+          if (capturePreviewInput.format === "xlsx") {
+            const workbook = await createMonthlyWorkbook(capturePreviewInput.anchorDate, capturePreviewInput.schedules, capturePreviewInput.comparison);
+            data = { format: "xlsx", workbook, sheets: createWorkbookPreview(workbook) };
+          } else {
+            data = { format: "png", dataUrl: await capturePreviewInput.renderCalendarImage(capturePreviewInput.schedules, () => !cancelled, capturePreviewInput.comparison) };
+          }
+          if (!cancelled) setCapturePreview({ input: capturePreviewInput, data });
+        } catch (error) {
+          if (!cancelled) setCapturePreview({ input: capturePreviewInput, error: error instanceof Error ? error.message : "プレビューを作成できませんでした" });
+        }
+      })();
+    }, 120);
+    return () => { cancelled = true; window.clearTimeout(timer); };
+  }, [capturePanelOpen, capturePreviewInput]);
+
+  const currentCapturePreview = capturePreview?.input === capturePreviewInput ? capturePreview : null;
+  const capturePreviewStatus = !capturePreviewInput.valid ? "empty" : currentCapturePreview?.data ? "ready" : currentCapturePreview?.error ? "error" : "loading";
 
   async function downloadCalendarImage() {
+    if (captureLoading || currentCapturePreview?.data?.format !== "png") return;
     setCaptureLoading(true);
 
     try {
-      const dataUrl = await renderCalendarImage(visibleSchedules);
-      downloadDataUrl(dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}.png`);
+      downloadDataUrl(currentCapturePreview.data.dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}.png`);
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "画像を作成できませんでした");
     } finally {
-      setCaptureRendering(false);
-      setCaptureSchedules(null);
       setCaptureLoading(false);
     }
   }
 
   async function downloadMemberCalendarImages() {
-    const selectedIds = new Set(selectedCaptureUserIds);
-    const exportUsers = groupUsers.filter((user) => user.role !== "Guest" && selectedIds.has(user.id));
+    if (captureLoading || currentCapturePreview?.data?.format !== "png") return;
+    const exportUsers = captureExportUsers;
     if (exportUsers.length === 0) {
       setApiMessage("出力対象のメンバーがいません");
       return;
@@ -705,14 +836,15 @@ export default function App() {
     try {
       if (exportUsers.length === 1) {
         const user = exportUsers[0];
-        const dataUrl = await renderCalendarImage(getSchedulesForMember(user));
+        const dataUrl = currentCapturePreview.data.dataUrl;
         downloadDataUrl(dataUrl, `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`);
         return;
       }
 
       const zip = new JSZip();
       for (const user of exportUsers) {
-        const dataUrl = await renderCalendarImage(getSchedulesForMember(user));
+        const memberView = getCaptureView([user]);
+        const dataUrl = user.id === previewMember?.id ? currentCapturePreview.data.dataUrl : await renderCalendarImage(memberView.schedules, undefined, memberView.comparison);
         zip.file(
           `${getCalendarExportBaseName(viewMode, anchorDate)}-${safeFileName(user.name)}.png`,
           dataUrlToBase64(dataUrl),
@@ -724,14 +856,43 @@ export default function App() {
     } catch (error) {
       setApiMessage(error instanceof Error ? error.message : "メンバー別画像を作成できませんでした");
     } finally {
-      setCaptureRendering(false);
-      setCaptureSchedules(null);
       setCaptureLoading(false);
     }
   }
 
-  function getSchedulesForMember(member: AuthUser) {
-    return visibleSchedules.filter((schedule) => (schedule.memberIds ?? []).includes(member.id) || schedule.members.includes(member.name));
+  async function downloadMonthlyExcel() {
+    if (captureLoading || currentCapturePreview?.data?.format !== "xlsx") return;
+    setCaptureLoading(true);
+    try {
+      const bytes = new Uint8Array(await currentCapturePreview.data.workbook.xlsx.writeBuffer());
+      downloadBlob(new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }), `${getCalendarExportBaseName("month", anchorDate)}.xlsx`);
+    } catch (error) {
+      setApiMessage(error instanceof Error ? error.message : "Excelを作成できませんでした");
+    } finally {
+      setCaptureLoading(false);
+    }
+  }
+
+  async function updateBaselineHistory(method: string, path: string, body: unknown) {
+    if (!isDesktopApp || !baselineLoaded || baselineSaving) return false;
+    setBaselineSaving(true);
+    setComparisonError("");
+    try {
+      const result = await requestDesktop<BaselineHistory>(method, path, body);
+      setBaselineHistory(result);
+      setComparisonFocusId(null);
+      return true;
+    } catch (error) {
+      setComparisonError(error instanceof Error ? error.message : "保存状態を更新できませんでした");
+      return false;
+    } finally { setBaselineSaving(false); }
+  }
+
+  async function saveBaseline(name: string) {
+    if (dirtyEditor || draftNewSchedule) return false;
+    const saved = await updateBaselineHistory("POST", "/api/baselines", { name });
+    if (saved) setComparisonEnabled(true);
+    return saved;
   }
 
   function logout() {
@@ -756,9 +917,12 @@ export default function App() {
   }
 
   const sidebarTitleButton = (
+    <div className="calendar-comparison-actions">
+    {isDesktopApp && <button className="icon-button comparison-open-button" aria-label="状態と差分を開く" title="状態を保存・差分を確認" onClick={() => { setComparisonFocusId(null); setComparisonOpen(true); }}><GitCompareArrows size={18} />{baseline && scheduleChanges.length > 0 && <span className="comparison-count">{scheduleChanges.length}</span>}</button>}
     <button className="icon-button calendar-title-sidebar-button" aria-label={sidebarOpen ? "サイドバーを閉じる" : "サイドバーを開く"} onClick={() => setSidebarOpen((value) => !value)}>
       <PanelRightOpen size={18} />
     </button>
+    </div>
   );
 
   return (
@@ -780,6 +944,9 @@ export default function App() {
         groupUsers={groupUsers}
         groupMembersError={groupMembersError}
         memberDisplayNames={memberDisplayNames}
+        onWorkspaceRefresh={refreshServerData}
+        updateBlocked={dirtyEditor || Boolean(draftNewSchedule) || captureLoading || capturePanelOpen || captureRendering || comparisonOpen || baselineSaving}
+        onUpdateBlocked={() => setApiMessage("編集中の内容を保存またはキャンセルしてから更新してください。")}
         onUpdateGroupMember={updateGroupMember}
         onUpdateMemberDisplayName={updateLocalMemberDisplayName}
         onRemoveGroupMember={removeGroupMember}
@@ -842,7 +1009,8 @@ export default function App() {
           <CalendarMonthDesktop
             anchorDate={anchorDate}
             monthDates={monthDates}
-            schedules={visibleSchedules}
+            schedules={calendarComparisonView.schedules}
+            comparison={calendarComparisonView.comparison}
             role={role}
             currentUserId={authSession.user.id}
             currentUserName={authSession.user.name}
@@ -857,7 +1025,8 @@ export default function App() {
         ) : viewMode === "day" ? (
           <CalendarDayDesktop
             date={anchorDate}
-            schedules={visibleSchedules}
+            schedules={calendarComparisonView.schedules}
+            comparison={calendarComparisonView.comparison}
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             role={role}
@@ -872,7 +1041,8 @@ export default function App() {
         ) : (
           <CalendarWeekDesktop
             weekDates={weekDates}
-            schedules={visibleSchedules}
+            schedules={calendarComparisonView.schedules}
+            comparison={calendarComparisonView.comparison}
             fallbackMaxVisibleColumns={maxVisibleColumns}
             currentMinute={currentMinute}
             role={role}
@@ -893,7 +1063,8 @@ export default function App() {
           selectedSchedule={selectedSchedule}
           currentUserId={authSession.user.id}
           currentUserName={authSession.user.name}
-          overlapList={overlapList}
+          overlapList={displayedOverlapList}
+          comparison={calendarComparisonView.comparison}
           tags={tags}
           addressCandidates={addressCandidates}
           groupMembers={displayGroupMembers}
@@ -930,19 +1101,36 @@ export default function App() {
         onClearLocalCache={clearLocalCache}
         onClose={() => setSettingOpen(false)}
       />
+      {comparisonOpen && isDesktopApp && <ScheduleComparisonPanel baseline={baseline} baselines={baselineHistory.baselines} changes={scheduleChanges} enabled={comparisonEnabled} loading={baselineSaving} blocked={!baselineLoaded || dirtyEditor || Boolean(draftNewSchedule)} error={comparisonError} focusId={comparisonFocusId} onEnabledChange={setComparisonEnabled} onSave={saveBaseline} onSelect={(id) => updateBaselineHistory("PATCH", "/api/baseline", { id })} onRename={(id, name) => updateBaselineHistory("PATCH", `/api/baselines/${encodeURIComponent(id)}`, { name })} onDelete={(id) => updateBaselineHistory("DELETE", `/api/baselines/${encodeURIComponent(id)}`, { confirmId: id })} onClose={() => setComparisonOpen(false)} />}
       {capturePanelOpen && (
         <CalendarCapturePanel
           viewMode={viewMode}
           anchorDate={anchorDate}
           role={role}
           target={captureTarget}
-          memberCount={groupUsers.filter((user) => user.role !== "Guest").length}
-          members={groupUsers.filter((user) => user.role !== "Guest")}
+          format={captureFormat}
+          memberCount={captureMembers.length}
+          members={captureMembers}
           selectedMemberIds={selectedCaptureUserIds}
           loading={captureLoading}
+          hasBaseline={Boolean(baseline)}
+          includeComparison={captureIncludeComparison}
+          onIncludeComparisonChange={setCaptureIncludeComparison}
+          previewData={currentCapturePreview?.data ?? null}
+          previewStatus={capturePreviewStatus}
+          previewError={currentCapturePreview?.error}
+          previewMembers={captureFormat === "png" && captureTarget === "members" ? captureExportUsers : []}
+          previewMemberId={previewMember?.id ?? ""}
+          onPreviewMemberChange={setCapturePreviewMemberId}
+          onPreviewRetry={() => setCapturePreviewRetry((value) => value + 1)}
           onTargetChange={setCaptureTarget}
+          onFormatChange={setCaptureFormat}
           onSelectedMembersChange={setSelectedCaptureUserIds}
           onDownload={() => {
+            if (captureFormat === "xlsx") {
+              void downloadMonthlyExcel();
+              return;
+            }
             if (captureTarget === "members") {
               void downloadMemberCalendarImages();
               return;
@@ -960,6 +1148,7 @@ export default function App() {
                 anchorDate={anchorDate}
                 monthDates={monthDates}
                 schedules={captureSchedules ?? visibleSchedules}
+                comparison={captureComparison}
                 role={role}
                 currentUserId={authSession.user.id}
                 currentUserName={authSession.user.name}
@@ -974,6 +1163,7 @@ export default function App() {
               <CalendarDayDesktop
                 date={anchorDate}
                 schedules={captureSchedules ?? visibleSchedules}
+                comparison={captureComparison}
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
@@ -988,6 +1178,7 @@ export default function App() {
               <CalendarWeekDesktop
                 weekDates={weekDates}
                 schedules={captureSchedules ?? visibleSchedules}
+                comparison={captureComparison}
                 fallbackMaxVisibleColumns={maxVisibleColumns}
                 currentMinute={currentMinute}
                 role={role}
@@ -1016,6 +1207,9 @@ export default function App() {
 }
 
 type TopBarProps = {
+  updateBlocked: boolean;
+  onUpdateBlocked: () => void;
+  onWorkspaceRefresh: () => Promise<void>;
   viewMode: CalendarViewMode;
   role: UserRole;
   searchQuery: string;
@@ -1052,6 +1246,9 @@ type TopBarProps = {
 };
 
 function TopBar({
+  updateBlocked,
+  onUpdateBlocked,
+  onWorkspaceRefresh,
   viewMode,
   role,
   searchQuery,
@@ -1098,7 +1295,7 @@ function TopBar({
   const pendingJoinRequests = joinRequests.filter((request) => request.status === "pending");
 
   useEffect(() => {
-    if (role !== "Admin") return;
+    if (isDesktopApp || role !== "Admin") return;
     void refreshJoinRequests();
   }, [role, groupId]);
 
@@ -1167,7 +1364,7 @@ function TopBar({
                     ))}
                   </div>
                 </div>
-                <div className="filter-field">
+                {!isDesktopApp && <div className="filter-field">
                   <span>種別</span>
                   <div className="filter-check-list">
                     <label className="filter-check-item">
@@ -1187,8 +1384,8 @@ function TopBar({
                       <span>グループ</span>
                     </label>
                   </div>
-                </div>
-                <div className="filter-field">
+                </div>}
+                {!isDesktopApp && <div className="filter-field">
                   <span>状態</span>
                   <div className="filter-check-list">
                     <label className="filter-check-item">
@@ -1200,7 +1397,7 @@ function TopBar({
                       <span>未確認タスク</span>
                     </label>
                   </div>
-                </div>
+                </div>}
                 <div className="filter-field">
                   <span>タグ</span>
                   <div className="filter-check-list">
@@ -1224,10 +1421,10 @@ function TopBar({
         <button className="icon-button" aria-label="設定" onClick={onOpenSetting}>
           <Settings size={18} />
         </button>
-        <button className="icon-button notification-button" aria-label="通知" onClick={onOpenNotifications}>
+        {!isDesktopApp && <button className="icon-button notification-button" aria-label="通知" onClick={onOpenNotifications}>
           <Bell size={18} />
           {unreadCount > 0 && <span className="notification-dot" />}
-        </button>
+        </button>}
         {(role === "Admin" || role === "User") && (
           <button className="primary-button" onClick={onCreateNew}>
             <Plus size={16} />
@@ -1258,12 +1455,14 @@ function TopBar({
         <button className="icon-button" aria-label="次へ" onClick={onNext}>
           <ChevronRight size={18} />
         </button>
-        <button className="account-avatar-button" aria-label="アカウント" onClick={() => setAccountPanelOpen(true)}>
-          {userInitial}
+        <button className="account-avatar-button" title={isDesktopApp ? "メンバー管理" : "アカウント"} aria-label={isDesktopApp ? "メンバー管理" : "アカウント"} onClick={() => setAccountPanelOpen(true)}>
+          {isDesktopApp ? <Users size={18} /> : userInitial}
           {pendingJoinRequests.length > 0 && <span className="account-pending-badge">{pendingJoinRequests.length}</span>}
         </button>
+        {isDesktopApp && <DesktopUpdateButton blocked={updateBlocked || accountPanelOpen || mobileMenuOpen} onBlocked={onUpdateBlocked} />}
       </div>
-      {accountPanelOpen && (
+      {accountPanelOpen && isDesktopApp && <LocalMembersPanel members={groupUsers} onRefresh={onWorkspaceRefresh} onClose={() => setAccountPanelOpen(false)} />}
+      {accountPanelOpen && !isDesktopApp && (
         <>
           <button className="account-panel-overlay" aria-label="アカウントパネルを閉じる" onClick={() => setAccountPanelOpen(false)} />
           <aside className="account-panel">
@@ -1396,7 +1595,7 @@ function TopBar({
                   ))}
                 </div>
               </div>
-              <div className="filter-field">
+              {!isDesktopApp && <div className="filter-field">
                 <span>種別</span>
                 <div className="filter-check-list">
                   <label className="filter-check-item">
@@ -1416,8 +1615,8 @@ function TopBar({
                     <span>グループ</span>
                   </label>
                 </div>
-              </div>
-              <div className="filter-field">
+              </div>}
+              {!isDesktopApp && <div className="filter-field">
                 <span>状態</span>
                 <div className="filter-check-list">
                   <label className="filter-check-item">
@@ -1429,7 +1628,7 @@ function TopBar({
                     <span>未確認タスク</span>
                   </label>
                 </div>
-              </div>
+              </div>}
               <div className="filter-field">
                 <span>タグ</span>
                 <div className="filter-check-list">
@@ -1534,6 +1733,12 @@ async function postApiJson<T>(path: string, body?: unknown): Promise<T> {
 }
 
 async function postApiJsonWithProgress<T>(path: string, body: unknown, onProgress: (progress: number) => void): Promise<T> {
+  if (isDesktopApp) {
+    onProgress(0);
+    const result = await requestDesktop<T>("POST", path, body);
+    onProgress(100);
+    return result;
+  }
   const apiBaseUrl = getApiBaseUrl();
   const authToken = getStoredAuthToken();
   const payload = JSON.stringify(body);
@@ -1604,6 +1809,7 @@ async function postClientLog(payload: Record<string, unknown>) {
 }
 
 async function requestApiJson<T>(path: string, init: RequestInit): Promise<T> {
+  if (isDesktopApp) return requestDesktop<T>(init.method ?? "GET", path, typeof init.body === "string" ? JSON.parse(init.body) : undefined);
   const apiBaseUrl = getApiBaseUrl();
   const authToken = getStoredAuthToken();
   const headers = new Headers(init.headers);
@@ -1883,11 +2089,23 @@ function CalendarCapturePanel({
   anchorDate,
   role,
   target,
+  format,
   memberCount,
   members,
   selectedMemberIds,
   loading,
+  hasBaseline,
+  includeComparison,
+  onIncludeComparisonChange,
+  previewData,
+  previewStatus,
+  previewError,
+  previewMembers,
+  previewMemberId,
+  onPreviewMemberChange,
+  onPreviewRetry,
   onTargetChange,
+  onFormatChange,
   onSelectedMembersChange,
   onDownload,
   onClose,
@@ -1896,99 +2114,112 @@ function CalendarCapturePanel({
   anchorDate: Date;
   role: UserRole;
   target: CaptureTarget;
+  format: CaptureFormat;
   memberCount: number;
   members: AuthUser[];
   selectedMemberIds: string[];
   loading: boolean;
+  hasBaseline: boolean;
+  includeComparison: boolean;
+  onIncludeComparisonChange: (value: boolean) => void;
+  previewData: CalendarPreviewData | null;
+  previewStatus: "loading" | "ready" | "error" | "empty";
+  previewError?: string;
+  previewMembers: AuthUser[];
+  previewMemberId: string;
+  onPreviewMemberChange: (id: string) => void;
+  onPreviewRetry: () => void;
   onTargetChange: (target: CaptureTarget) => void;
+  onFormatChange: (format: CaptureFormat) => void;
   onSelectedMembersChange: (memberIds: string[]) => void;
   onDownload: () => void;
   onClose: () => void;
 }) {
   const selectedCount = target === "members" ? selectedMemberIds.length : memberCount;
-  const outputFormatLabel = target === "members" && selectedCount > 1 ? "ZIP" : "PNG";
+  const outputFormatLabel = format === "xlsx" ? "Excel" : target === "members" && selectedCount > 1 ? "ZIP" : "PNG";
+  const monthLabel = `${anchorDate.getFullYear()}年${anchorDate.getMonth() + 1}月`;
 
   return (
     <>
-      <button className="capture-panel-overlay" aria-label="画像出力を閉じる" onClick={onClose} />
-      <aside className="capture-panel">
+      <button className="capture-panel-overlay" aria-label="画像出力を閉じる" disabled={loading} onClick={onClose} />
+      <aside className="capture-panel" role="dialog" aria-modal="true" aria-label="画像・Excel出力">
         <div className="drawer-header">
           <h2>画像出力</h2>
-          <button className="icon-button" onClick={onClose}>×</button>
+          <button className="icon-button" aria-label="出力画面を閉じる" disabled={loading} onClick={onClose}>×</button>
         </div>
-        <div className="capture-preview-box">
-          <div className="capture-preview-ratio">
-            <CalendarDays size={34} />
-            <strong>1920 × 1080</strong>
-            <span>{getViewModeLabel(viewMode)} / {toDateKey(anchorDate)}</span>
+        <div className="capture-panel-body">
+          <div className="capture-preview-box">
+            <CalendarExportPreview data={previewData} status={previewStatus} error={previewError} members={previewMembers} memberId={previewMemberId} disabled={loading} onMemberChange={onPreviewMemberChange} onRetry={onPreviewRetry} />
+          </div>
+          <div className="capture-options" aria-label="画像出力設定">
+            {hasBaseline && <label className="comparison-toggle"><input type="checkbox" checked={includeComparison} disabled={loading} onChange={(event) => onIncludeComparisonChange(event.target.checked)} />差分を色分けして出力</label>}
+            <div className="capture-option-grid">
+              <label className="field">
+                <span>形式</span>
+                <select aria-label="出力形式" value={format} disabled={loading} onChange={(event) => onFormatChange(event.target.value as CaptureFormat)}>
+                  <option value="png">PNG（画像）</option>
+                  <option value="xlsx">Excel（.xlsx）</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>{format === "xlsx" ? "対象月" : "出力サイズ"}</span>
+                {format === "xlsx" ? <input aria-label="Excelの対象月" value={monthLabel} readOnly /> : <select value="fhd" disabled><option value="fhd">FHD 1920×1080</option></select>}
+              </label>
+              <label className="field">
+                <span>出力対象</span>
+                <select aria-label="出力対象" value={target} disabled={loading} onChange={(event) => onTargetChange(event.target.value as CaptureTarget)}>
+                  <option value="current">{format === "xlsx" ? "現在の絞り込み" : "現在の表示"}</option>
+                  {role === "Admin" && <option value="members">{format === "xlsx" ? "メンバーを選択" : "各メンバーごと"}</option>}
+                </select>
+              </label>
+              <label className="field">
+                <span>対象表示</span>
+                <select value={format === "xlsx" ? "month" : viewMode} disabled>
+                  <option value="month">月表示</option>
+                  <option value="week">週表示</option>
+                  <option value="day">日表示</option>
+                </select>
+              </label>
+              {format === "png" && <label className="field">
+                <span>背景</span>
+                <select value="white" disabled>
+                  <option value="white">白背景</option>
+                </select>
+              </label>}
+            </div>
+            {target === "members" && (
+              <div className="capture-member-select">
+                <div className="capture-member-select-head">
+                  <strong>{format === "xlsx" ? "出力メンバー" : "メンバー別出力"}</strong>
+                  <button type="button" className="text-button" disabled={loading} onClick={() => onSelectedMembersChange(members.map((member) => member.id))}>全員</button>
+                </div>
+                <div className="capture-member-list">
+                  {members.map((member) => (
+                    <label className="filter-check-item" key={member.id}>
+                      <input
+                        type="checkbox"
+                        disabled={loading}
+                        checked={selectedMemberIds.includes(member.id)}
+                        onChange={() => onSelectedMembersChange(toggleListValue(selectedMemberIds, member.id))}
+                      />
+                      <span>{member.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="capture-panel-note">
+                  {format === "xlsx" ? `${selectedCount}人 / Excel 1ファイル / 3シート` : selectedCount > 1
+                    ? `${selectedCount}人分のPNGをZIPにまとめて保存します。`
+                    : `${selectedCount}人分のPNGを保存します。`}
+                </p>
+              </div>
+            )}
           </div>
         </div>
-        <div className="capture-option-grid">
-          <label className="field">
-            <span>出力サイズ</span>
-            <select value="fhd" disabled>
-              <option value="fhd">FHD 1920×1080</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>形式</span>
-            <select value={outputFormatLabel.toLowerCase()} disabled>
-              <option value="png">PNG</option>
-              <option value="zip">ZIP</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>出力対象</span>
-            <select value={target} onChange={(event) => onTargetChange(event.target.value as CaptureTarget)}>
-              <option value="current">現在の表示</option>
-              {role === "Admin" && <option value="members">各メンバーごと</option>}
-            </select>
-          </label>
-          <label className="field">
-            <span>対象表示</span>
-            <select value={viewMode} disabled>
-              <option value="month">月表示</option>
-              <option value="week">週表示</option>
-              <option value="day">日表示</option>
-            </select>
-          </label>
-          <label className="field">
-            <span>背景</span>
-            <select value="white" disabled>
-              <option value="white">白背景</option>
-            </select>
-          </label>
-        </div>
-        {target === "members" && (
-          <div className="capture-member-select">
-            <div className="capture-member-select-head">
-              <strong>メンバー別出力</strong>
-              <button type="button" className="text-button" onClick={() => onSelectedMembersChange(members.map((member) => member.id))}>全員</button>
-            </div>
-            <div className="capture-member-list">
-              {members.map((member) => (
-                <label className="filter-check-item" key={member.id}>
-                  <input
-                    type="checkbox"
-                    checked={selectedMemberIds.includes(member.id)}
-                    onChange={() => onSelectedMembersChange(toggleListValue(selectedMemberIds, member.id))}
-                  />
-                  <span>{member.name}</span>
-                </label>
-              ))}
-            </div>
-            <p className="capture-panel-note">
-              {selectedCount > 1
-                ? `${selectedCount}人分のPNGをZIPにまとめて保存します。`
-                : `${selectedCount}人分のPNGを保存します。`}
-            </p>
-          </div>
-        )}
         <div className="capture-panel-actions">
-          <button className="secondary-button" onClick={onClose}>閉じる</button>
-          <button className="primary-button" disabled={loading || (target === "members" && selectedCount === 0)} onClick={onDownload}>
+          <button className="secondary-button" disabled={loading} onClick={onClose}>閉じる</button>
+          <button className="primary-button" disabled={loading || previewStatus !== "ready" || (target === "members" && selectedCount === 0)} onClick={onDownload}>
             <Download size={16} />
-            {loading ? "画像を作成中" : `${outputFormatLabel}を保存`}
+            {loading ? format === "xlsx" ? "Excelを作成中" : "画像を作成中" : `${outputFormatLabel}を保存`}
           </button>
         </div>
       </aside>
@@ -2180,9 +2411,9 @@ function SettingDrawer({
           <MessageSquare size={16} />
           フィードバック
         </button>
-        <button className="secondary-button full-width-button settings-cache-button" onClick={onClearLocalCache}>
+        {!isDesktopApp && <button className="secondary-button full-width-button settings-cache-button" onClick={onClearLocalCache}>
           ローカルキャッシュ削除
-        </button>
+        </button>}
       </aside>
     </>
   );

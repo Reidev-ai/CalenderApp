@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties, type KeyboardEvent } f
 import { Check, Copy, ImagePlus, Minus, Plus, Trash2, X } from "lucide-react";
 import type { AuthUser, MemoImage, Schedule, SidebarMode, Tag, UserRole } from "../../types";
 import { MemoImageElement, MemoImagePreviewOverlay, ReadStatus, ScheduleDetail } from "../component/ScheduleDetail";
+import { isDesktopApp } from "../../desktop";
 
 export function AdminSidebarContent({
   mode,
@@ -156,9 +157,9 @@ function ScheduleEditor({
   }, [schedule]);
 
   useEffect(() => {
-    onDirtyChange(isDirty);
+    onDirtyChange(isDirty || saving || memoImageUploads.length > 0);
     return () => onDirtyChange(false);
-  }, [isDirty, onDirtyChange]);
+  }, [isDirty, saving, memoImageUploads.length, onDirtyChange]);
 
   function updateDraft(field: keyof Schedule, value: string | string[] | boolean | MemoImage[]) {
     setDraft((current) => ({ ...current, [field]: value }));
@@ -225,6 +226,8 @@ function ScheduleEditor({
     setSaving(true);
     try {
       await onSave(draft);
+    } catch {
+      // App retains the draft and shows the persistence error.
     } finally {
       setSaving(false);
     }
@@ -339,10 +342,10 @@ function ScheduleEditor({
         </div>
         {memberPanelOpen && (
           <div className="member-picker-panel">
-            <span className="member-picker-title">グループメンバー</span>
+            <span className="member-picker-title">{isDesktopApp ? "登録メンバー" : "グループメンバー"}</span>
             <div className="member-choice-list">
               {groupUsers.length === 0 ? (
-                <div className="member-empty-text">{groupMembersError ? "グループメンバーを取得できません" : "グループメンバーはいません"}</div>
+                <div className="member-empty-text">{groupMembersError || (isDesktopApp ? "登録メンバーはいません" : "グループメンバーはいません")}</div>
               ) : (
                 groupUsers.map((user) => {
                   const selected = selectedMemberIds.includes(user.id) || draft.members.includes(user.name);
@@ -514,7 +517,7 @@ function ScheduleEditor({
           <Copy size={16} />
           複製
         </button>
-        {!isReadByCurrentUser && <button type="button" className="secondary-button" disabled={saving} onClick={onMarkAsRead}>既読</button>}
+        {!isDesktopApp && !isReadByCurrentUser && <button type="button" className="secondary-button" disabled={saving} onClick={onMarkAsRead}>既読</button>}
         <button type="button" className="primary-button" disabled={!canEdit || saving} onClick={() => void handleSave()}>{saving ? "保存中" : "保存"}</button>
       </div>
     </form>

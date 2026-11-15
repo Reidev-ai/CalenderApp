@@ -1,4 +1,4 @@
-import crypto, { createHash, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
 import type { MemoImage, Schedule, Tag, UserRole } from "../../types.ts";
 import type { Database, LoginBody, MemberPatch, PublicUser, RegisterBody, SchedulePatch, ServerUser } from "./domain.ts";
 import { HttpError } from "./http.ts";
@@ -6,11 +6,6 @@ import { HttpError } from "./http.ts";
 const sessionTtlMs = 7 * 24 * 60 * 60 * 1000;
 const passwordHashPrefix = "scrypt";
 const passwordKeyLength = 64;
-const passwordCrypto = crypto as typeof crypto & {
-  randomBytes: (size: number) => { toString: (encoding: "hex") => string };
-  scryptSync: (password: string, salt: string, keylen: number) => Uint8Array;
-  timingSafeEqual: (left: Uint8Array, right: Uint8Array) => boolean;
-};
 const defaultTagTemplates = [
   { id: "blue", name: "通常", color: "#3b82f6" },
   { id: "green", name: "確認", color: "#22c55e" },
@@ -26,8 +21,8 @@ export function publicUser(user: ServerUser): PublicUser {
 }
 
 export function hashPassword(password: string) {
-  const salt = passwordCrypto.randomBytes(16).toString("hex");
-  const hash = bytesToHex(passwordCrypto.scryptSync(password, salt, passwordKeyLength));
+  const salt = randomBytes(16).toString("hex");
+  const hash = bytesToHex(scryptSync(password, salt, passwordKeyLength));
   return `${passwordHashPrefix}$${salt}$${hash}`;
 }
 
@@ -492,8 +487,8 @@ function verifyPassword(password: string, storedHash: string) {
     if (!salt || !hash) return false;
     const expected = hexToBytes(hash);
     if (expected.length !== passwordKeyLength) return false;
-    const actual = passwordCrypto.scryptSync(password, salt, expected.length);
-    return expected.length === actual.length && passwordCrypto.timingSafeEqual(expected, actual);
+    const actual = scryptSync(password, salt, expected.length);
+    return expected.length === actual.length && timingSafeEqual(expected, actual);
   }
 
   return legacySha256PasswordHash(password) === storedHash;

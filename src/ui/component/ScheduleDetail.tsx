@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
 import type { MemoImage, Schedule, UserRole } from "../../types";
+import { isDesktopApp, requestDesktop } from "../../desktop";
 
 export function ScheduleDetail({
   schedule,
@@ -81,6 +82,12 @@ export function MemoImageElement({ image }: { image: MemoImage }) {
     }
 
     let active = true;
+    if (isDesktopApp) {
+      void requestDesktop<{ dataUrl: string }>("GET", image.url)
+        .then((result) => { if (active) setSrc(result.dataUrl); })
+        .catch(() => { if (active) setSrc(""); });
+      return () => { active = false; };
+    }
     let objectUrl = "";
     const token = getStoredAuthToken();
 
@@ -137,6 +144,7 @@ function formatScheduleDateRange(schedule: Schedule) {
 }
 
 export function ReadStatus({ schedule }: { schedule: Schedule }) {
+  if (isDesktopApp) return null;
   return (
     <div className="read-status">
       <strong>既読状況</strong>

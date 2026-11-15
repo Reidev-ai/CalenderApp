@@ -1,7 +1,14 @@
 node_modules/
 dist/
+dist-electron/
+release/
+.artifacts/
 .vite/
 .DS_Store
+.env
+.env.*
+*.env
+!.env.example
 *.tsbuildinfo
 src/Data/data/*.sqlite
 src/Data/data/*.sqlite-*

@@ -3,8 +3,11 @@ import type { AuthUser, MemoImage, Schedule, SidebarMode, Tag, UserRole } from "
 import { AdminSidebarContent } from "../ForAdmin/AdminSidebarContent";
 import { GuestSidebarContent } from "../ForGuest/GuestSidebarContent";
 import { UserSidebarContent } from "../ForUser/UserSidebarContent";
+import type { CalendarComparison } from "../../comparisonTypes";
+import { ComparisonBadge } from "./ComparisonBadge";
 
 type SideBarProps = {
+  comparison?: CalendarComparison;
   open: boolean;
   role: UserRole;
   mode: SidebarMode;
@@ -34,6 +37,7 @@ type SideBarProps = {
 };
 
 export function SideBar({
+  comparison,
   open,
   role,
   mode,
@@ -72,7 +76,7 @@ export function SideBar({
         </div>
       </div>
       {mode === "overlapList" ? (
-        <OverlapTaskList schedules={overlapList} role={role} currentUserId={currentUserId} currentUserName={currentUserName} onSelectSchedule={onSelectSchedule} />
+        <OverlapTaskList comparison={comparison} schedules={overlapList} role={role} currentUserId={currentUserId} currentUserName={currentUserName} onSelectSchedule={onSelectSchedule} />
       ) : role === "Admin" || (role === "User" && selectedSchedule?.isPersonal && mode === "edit") ? (
         <AdminSidebarContent
           mode={mode}
@@ -106,12 +110,14 @@ export function SideBar({
 }
 
 function OverlapTaskList({
+  comparison,
   schedules,
   role,
   currentUserId,
   currentUserName,
   onSelectSchedule,
 }: {
+  comparison?: CalendarComparison;
   schedules: Schedule[];
   role: UserRole;
   currentUserId: string;
@@ -125,7 +131,8 @@ function OverlapTaskList({
         const isUnread = isUnreadForCurrentUser(schedule, role, currentUserId, currentUserName);
 
         return (
-          <button className={`overlap-item ${isUnread ? "unread-task" : ""}`} key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+          <button className={`overlap-item ${isUnread ? "unread-task" : ""}`} data-comparison={comparison?.marks[schedule.id]?.kind} key={schedule.id} onClick={() => onSelectSchedule(schedule)}>
+            <ComparisonBadge mark={comparison?.marks[schedule.id]} />
             {isUnread && <span className="unread-badge">未</span>}
             <span>{schedule.startTime} ~ {schedule.endTime}</span>
             <strong>{schedule.siteName}</strong>
